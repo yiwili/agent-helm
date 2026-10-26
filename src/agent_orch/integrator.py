@@ -3,11 +3,17 @@ import uuid
 from pathlib import Path
 
 from .models import OrchError, digest
+from .maintenance import maintenance_lock
 from .verifier import verify
 from .workspace import apply_files, copy_snapshot, diff, manifest
 
 
 async def integrate(store, run):
+    with maintenance_lock(store.root):
+        return await _integrate(store, run)
+
+
+async def _integrate(store, run):
     r = store.run(run)
     if r["state"] != "accepted":
         raise OrchError("Only accepted runs can produce integration candidates")

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .adapters.codex_cli import CodexAdapter
 from .brain import fixture_plan
+from .backup import backup_bundle, restore_bundle, verify_backup
 from .integrator import integrate
 from .models import OrchError, digest, validate_plan
 from .scheduler import Scheduler
@@ -87,6 +88,11 @@ def parser():
     export.add_argument("--output", required=True)
     backup = sub.add_parser("backup")
     backup.add_argument("--output", required=True)
+    check = sub.add_parser("verify-backup")
+    check.add_argument("--backup", required=True)
+    restore = sub.add_parser("restore")
+    restore.add_argument("--backup", required=True)
+    restore.add_argument("--output", required=True)
     sub.add_parser("recover")
     demo = sub.add_parser("demo")
     demo.add_argument("--bad-first", action="store_true")
@@ -97,6 +103,11 @@ def parser():
 
 async def dispatch(args):
     command = args.command
+    if command == "verify-backup":
+        meta = verify_backup(args.backup)
+        return {"verified": True, "manifest_hash": meta["manifest_hash"], "files": len(meta["files"])}
+    if command == "restore":
+        return restore_bundle(args.backup, args.output)
     if command == "doctor":
         # Intentionally no state directory or DB creation for read-only metadata commands.
         return {"platform": platform.platform(), "python": sys.version, "state_root": str(Path(args.state_root).resolve()),
@@ -148,10 +159,7 @@ async def dispatch(args):
                     raise OrchError("Approval declined")
             return {"scope_id": store.approve(plan, args.source), "plan_hash": digest(plan)}
         if command == "revoke":
-            with store.transaction():
-                count = store.db.execute("UPDATE approvals SET revoked=1 WHERE id=?", (args.scope,)).rowcount
-            if not count:
-                raise OrchError("Unknown approval")
+            store.revoke(args.scope)
             return {"revoked": args.scope}
         if command == "submit":
             return {"run_id": store.submit(load(args.plan), args.source, args.approval_scope, args.idempotency_key)}
@@ -224,34 +232,6 @@ def export_run(store, run, target):
     index = manifest(target)
     (target/"manifest.json").write_text(json.dumps(index, indent=2), encoding="utf-8")
     return {"export": str(target), "manifest_hash": digest(index), "credentials_included": False}
-
-
-def backup_bundle(store, target):
-    target = Path(target).resolve()
-    if target.exists() or target.is_relative_to(store.root):
-        raise OrchError("Backup target must be new and outside live state root")
-    # Refuse in-flight work: DB + artifact tree need one consistent quiescent boundary.
-    active = store.db.execute("SELECT COUNT(*) FROM tasks WHERE state IN ('running','verifying','reviewing','cancel_requested')").fetchone()[0]
-    if active:
-        raise OrchError("Stop in-flight work before backup")
-    target.mkdir(parents=True)
-    with store.transaction():
-        active = store.db.execute("SELECT COUNT(*) FROM tasks WHERE state IN ('running','verifying','reviewing','cancel_requested')").fetchone()[0]
-        if active:
-            raise OrchError("In-flight work appeared before backup lock")
-        # Separate connection backup would block while this connection holds a write lock.
-        conn = __import__("sqlite3").connect(store.root/"state.db")
-        dest = __import__("sqlite3").connect(target/"state.db")
-        try:
-            conn.backup(dest)
-        finally:
-            conn.close()
-            dest.close()
-        for child in ("runs", "integrations", "fixtures"):
-            if (store.root/child).exists():
-                shutil.copytree(store.root/child, target/child)
-    (target/"backup.json").write_text(json.dumps({"schema_version": 1, "original_state_root": str(store.root), "requires_same_absolute_path": True}), encoding="utf-8")
-    return {"backup": str(target), "schema_version": 1}
 
 
 def main(argv=None):

@@ -1,5 +1,7 @@
 # 交付复核
 
+本页记录 v0.1 初始验收。v0.2 阶段 1 的 62 项测试、真实本机取消及恢复演练见 [阶段 1 验收清单](phase1-acceptance.md)。
+
 日期：2026-10-26（Asia/Shanghai）。工作目录原为空目录；只用本项目与自建合成夹具，未改动其他项目、登录配置或生产环境。公司业务代码不得作为实验输入。
 
 运行依赖为 Python 标准库，没有安装新软件。Windows 使用已有 Codex runtime Python 3.12.14；WSL Ubuntu 使用 Python 3.14.4。Codex `--version`、`exec --help`、`login status` 只读探测后实现精确版本适配。

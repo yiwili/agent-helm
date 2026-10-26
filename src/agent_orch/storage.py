@@ -7,15 +7,24 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-from .models import OrchError, TERMINAL, TRANSITIONS, canonical, digest, utcnow, validate_plan
+from .models import OrchError, TERMINAL, TRANSITIONS, canonical, digest, utcnow, validate_plan, validate_review
 
 
 class Store:
     def __init__(self, root):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        existed = (self.root / "state.db").exists()
         self.db = sqlite3.connect(self.root / "state.db", timeout=10, isolation_level=None)
         self.db.row_factory = sqlite3.Row
+        if existed:
+            try:
+                version = self.db.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
+                if version != 1:
+                    raise OrchError("Unsupported database version")
+            except BaseException:
+                self.db.close()
+                raise
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.executescript('''
@@ -103,6 +112,26 @@ class Store:
         if not a or a["revoked"] or a["expires"] < time.time() or a["plan_hash"] != digest(plan) or a["source"] != source:
             raise OrchError("No valid approval for this exact plan and source")
 
+    def authorized(self, run):
+        r = self.run(run)
+        try:
+            self.check_approval(r["approval"], json.loads(r["plan"]), r["source"])
+        except OrchError:
+            return False
+        return True
+
+    def revoke(self, scope):
+        with self.transaction():
+            if not self.db.execute("UPDATE approvals SET revoked=1 WHERE id=?", (scope,)).rowcount:
+                raise OrchError("Unknown approval")
+            for row in self.db.execute("SELECT id FROM runs WHERE approval=?", (scope,)).fetchall():
+                for task in self.tasks(row["id"]):
+                    if task["state"] not in TERMINAL | {"cancel_requested", "needs_reconciliation"}:
+                        old = task["state"]
+                        self._transition(row["id"], task["id"], "cancel_requested", payload={"reason": "approval revoked"})
+                        if old in ("queued", "blocked", "rework"):
+                            self._transition(row["id"], task["id"], "cancelled")
+
     def run(self, run):
         r = self.db.execute("SELECT * FROM runs WHERE id=?", (run,)).fetchone()
         if not r:
@@ -131,6 +160,8 @@ class Store:
     def claim(self, run, task, owner, lease_seconds):
         with self.transaction():
             r = self.run(run)
+            if r["state"] in ("needs_reconciliation", "cancel_requested", "cancelled"):
+                return None
             self.check_approval(r["approval"], json.loads(r["plan"]), r["source"])
             t = self.db.execute("SELECT * FROM tasks WHERE run_id=? AND id=?", (run, task)).fetchone()
             if not t or t["state"] != "queued":
@@ -140,7 +171,7 @@ class Store:
             if any(states[d] != "accepted" for d in spec["dependencies"]):
                 return None
             # v1 deliberately serializes each run; independent run processes may coexist.
-            if any(x["state"] in ("running", "verifying", "reviewing") for x in self.tasks(run)):
+            if any(x["state"] in ("running", "verifying", "reviewing", "cancel_requested", "needs_reconciliation") for x in self.tasks(run)):
                 return None
             fence, number = t["fence"] + 1, t["attempt"] + 1
             self.db.execute("UPDATE tasks SET state='running',attempt=?,fence=?,lease=?,owner=? WHERE run_id=? AND id=?", (number, fence, time.time()+lease_seconds, owner, run, task))
@@ -151,15 +182,35 @@ class Store:
 
     def transition(self, run, task, state, fence=None, payload=None):
         with self.transaction():
-            t = self.db.execute("SELECT * FROM tasks WHERE run_id=? AND id=?", (run, task)).fetchone()
-            if not t or state not in TRANSITIONS.get(t["state"], set()):
-                raise OrchError("Illegal or late state transition")
-            if fence is not None and (t["fence"] != fence or (t["lease"] or 0) < time.time()):
-                raise OrchError("Stale fencing token or expired lease")
-            self.db.execute("UPDATE tasks SET state=? WHERE run_id=? AND id=?", (state, run, task))
-            self.db.execute("UPDATE attempts SET state=? WHERE run_id=? AND task_id=? AND number=?", (state, run, task, t["attempt"]))
-            self.event(run, task, t["attempt"], state, payload or {})
-            self._refresh(run)
+            self._transition(run, task, state, fence, payload)
+
+    def _transition(self, run, task, state, fence=None, payload=None):
+        t = self.db.execute("SELECT * FROM tasks WHERE run_id=? AND id=?", (run, task)).fetchone()
+        if not t or state not in TRANSITIONS.get(t["state"], set()):
+            raise OrchError("Illegal or late state transition")
+        if fence is not None and (t["fence"] != fence or (t["lease"] or 0) < time.time()):
+            raise OrchError("Stale fencing token or expired lease")
+        if state == "accepted":
+            if not self.authorized(run):
+                raise OrchError("Approval revoked or expired before acceptance")
+            ev = self.db.execute("SELECT evidence FROM attempts WHERE run_id=? AND task_id=? AND number=?", (run, task, t["attempt"])).fetchone()
+            review = self.db.execute("SELECT body FROM reviews WHERE run_id=? AND task_id=? AND attempt=? ORDER BY rowid DESC LIMIT 1", (run, task, t["attempt"])).fetchone()
+            if not ev or not ev[0] or not review:
+                raise OrchError("Acceptance requires persisted verification and review")
+            decision = validate_review(json.loads(review[0]), json.loads(ev[0]))
+            if decision["decision"] != "accept":
+                raise OrchError("No accepted review for this candidate")
+        self.db.execute("UPDATE tasks SET state=?,fence=fence+? WHERE run_id=? AND id=?", (state, int(state == "needs_reconciliation"), run, task))
+        self.db.execute("UPDATE attempts SET state=? WHERE run_id=? AND task_id=? AND number=?", (state, run, task, t["attempt"]))
+        self.event(run, task, t["attempt"], state, payload or {})
+        self._refresh(run)
+
+    def renew(self, run, task, fence, seconds):
+        with self.transaction():
+            if not self.authorized(run):
+                return False
+            count = self.db.execute("UPDATE tasks SET lease=? WHERE run_id=? AND id=? AND fence=? AND lease>? AND state IN ('running','verifying','reviewing')", (time.time()+seconds, run, task, fence, time.time())).rowcount
+            return count == 1
 
     def _refresh(self, run):
         states = {x["state"] for x in self.tasks(run)}
@@ -180,19 +231,21 @@ class Store:
         self.db.execute("UPDATE runs SET state=? WHERE id=?", (state, run))
 
     def cancel(self, run):
-        self.run(run)
-        for t in self.tasks(run):
-            if t["state"] not in TERMINAL | {"cancel_requested"}:
-                self.transition(run, t["id"], "cancel_requested")
-                if t["state"] in ("queued", "blocked", "rework"):
-                    self.transition(run, t["id"], "cancelled")
+        with self.transaction():
+            self.run(run)
+            for t in self.tasks(run):
+                if t["state"] not in TERMINAL | {"cancel_requested"}:
+                    self._transition(run, t["id"], "cancel_requested")
+                    if t["state"] in ("queued", "blocked", "rework"):
+                        self._transition(run, t["id"], "cancelled")
         return self.run(run)["state"]
 
     def recover(self):
         recovered = []
-        for row in self.db.execute("SELECT * FROM tasks WHERE state IN ('running','verifying','reviewing','cancel_requested') AND lease < ?", (time.time(),)).fetchall():
-            self.transition(row["run_id"], row["id"], "needs_reconciliation", payload={"reason": "expired lease; side effects unknown; not retried"})
-            recovered.append([row["run_id"], row["id"]])
+        with self.transaction():
+            for row in self.db.execute("SELECT * FROM tasks WHERE state IN ('running','verifying','reviewing','cancel_requested') AND lease < ?", (time.time(),)).fetchall():
+                self._transition(row["run_id"], row["id"], "needs_reconciliation", payload={"reason": "expired lease; side effects unknown; not retried"})
+                recovered.append([row["run_id"], row["id"]])
         return recovered
 
     def events(self, run, after=0):
@@ -204,12 +257,29 @@ class Store:
             result.append(item)
         return result
 
-    def save_evidence(self, run, task, attempt, evidence, review):
+    def save_evidence(self, run, task, attempt, evidence, review, fence=None):
         with self.transaction():
-            self.db.execute("UPDATE attempts SET evidence=? WHERE run_id=? AND task_id=? AND number=?", (canonical(evidence), run, task, attempt))
-            self.db.execute("INSERT INTO reviews VALUES(?,?,?,?)", (run, task, attempt, canonical(review)))
-            for path, info in evidence["manifest"].items():
-                self.db.execute("INSERT INTO artifacts VALUES(?,?,?,?,?,?)", (run, task, attempt, path, info["sha256"], info["size"]))
+            self._save_evidence(run, task, attempt, evidence, review, fence)
+
+    def _save_evidence(self, run, task, attempt, evidence, review, fence):
+        t = self.db.execute("SELECT * FROM tasks WHERE run_id=? AND id=?", (run, task)).fetchone()
+        if not t or t["attempt"] != attempt or t["state"] != "reviewing" or (t["lease"] or 0) < time.time() or (fence is not None and fence != t["fence"]):
+            raise OrchError("Evidence belongs to an inactive or stale attempt")
+        self.db.execute("UPDATE attempts SET evidence=? WHERE run_id=? AND task_id=? AND number=?", (canonical(evidence), run, task, attempt))
+        self.db.execute("INSERT INTO reviews VALUES(?,?,?,?)", (run, task, attempt, canonical(review)))
+        self.db.execute("DELETE FROM artifacts WHERE run_id=? AND task_id=? AND attempt=?", (run, task, attempt))
+        for path, info in evidence["manifest"].items():
+            self.db.execute("INSERT INTO artifacts VALUES(?,?,?,?,?,?)", (run, task, attempt, path, info["sha256"], info["size"]))
+
+    def complete_review(self, run, task, attempt, fence, evidence, review, source):
+        validate_review(review, evidence)
+        state = {"accept": "accepted", "rework": "rework", "escalate": "escalated"}[review["decision"]]
+        with self.transaction():
+            if not self.authorized(run):
+                raise OrchError("Approval revoked or expired before review commit")
+            self._save_evidence(run, task, attempt, evidence, review, fence)
+            self._transition(run, task, state, fence, {"candidate_hash": evidence["candidate_hash"], "decision": review["decision"], "decision_source": source})
+        return state
 
     def backup(self, target):
         target = Path(target).resolve()

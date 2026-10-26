@@ -13,6 +13,7 @@ from .adapters.mock import MockAdapter
 from .brain import CodexBrain, MockBrain
 from .models import OrchError, digest, validate_review
 from .verifier import verify
+from .supervisor import ProcessTreeUnconfirmed
 from .workspace import apply_files, copy_snapshot, diff, manifest
 
 
@@ -26,7 +27,28 @@ class Scheduler:
         self.owner = uuid.uuid4().hex
 
     def cancelled(self, run, task):
-        return next(t for t in self.store.tasks(run) if t["id"] == task)["state"] in ("cancel_requested", "needs_reconciliation")
+        t = next(t for t in self.store.tasks(run) if t["id"] == task)
+        return t["state"] in ("cancel_requested", "needs_reconciliation") or (t["lease"] or 0) < time.time() or not self.store.authorized(run)
+
+    def _settle_error(self, run, task, fence, error):
+        current = next(x for x in self.store.tasks(run) if x["id"] == task)
+        if current["state"] in ("needs_reconciliation", "accepted", "cancelled", "failed", "timed_out", "escalated"):
+            return
+        if isinstance(error, ProcessTreeUnconfirmed) or (current["lease"] or 0) < time.time():
+            self.store.transition(run, task, "needs_reconciliation", payload={"reason": "process stop or lease ownership unconfirmed"})
+        elif current["state"] == "cancel_requested":
+            self.store.transition(run, task, "cancelled", fence, {"local_stop_confirmed": True, "remote_session_stop": "unverified"})
+        elif not self.store.authorized(run):
+            self.store.transition(run, task, "cancel_requested", payload={"reason": "approval expired or revoked"})
+            self.store.transition(run, task, "cancelled", fence, {"local_stop_confirmed": True, "remote_session_stop": "unverified"})
+        elif isinstance(error, asyncio.CancelledError):
+            self.store.transition(run, task, "needs_reconciliation", payload={"reason": "supervisor interrupted; verify external state"})
+        elif isinstance(error, TimeoutError):
+            self.store.transition(run, task, "timed_out", fence, {"reason": "deadline; supervised local process tree stopped", "remote_session_stop": "unverified"})
+        else:
+            from .adapters.codex_cli import redact
+            state = "blocked" if isinstance(error, ProviderBlocked) and current["state"] == "running" else "failed"
+            self.store.transition(run, task, state, fence, {"reason": redact(str(error))[:1000], "error_type": type(error).__name__})
 
     async def execute(self, run):
         self.store.recover()
@@ -43,33 +65,17 @@ class Scheduler:
                 self.store.transition(run, t["id"], "blocked", payload={"reason": "Codex disabled; no API fallback"})
                 continue
             while True:
-                claimed = self.store.claim(run, t["id"], self.owner, task["wall_seconds"] + 180)
+                claimed = self.store.claim(run, t["id"], self.owner, task["wall_seconds"] + 360)
                 if not claimed:
                     break
                 attempt, fence = claimed
                 try:
                     await self._attempt(r, task, attempt, fence)
                 except asyncio.CancelledError:
-                    current = next(x for x in self.store.tasks(run) if x["id"] == t["id"])
-                    if current["state"] == "cancel_requested":
-                        self.store.transition(run, t["id"], "cancelled", fence)
-                    else:
-                        self.store.transition(run, t["id"], "needs_reconciliation", payload={"reason": "supervisor interrupted; verify external state"})
-                    break
-                except TimeoutError:
-                    self.store.transition(run, t["id"], "timed_out", fence, {"reason": "deadline; supervised process tree stopped"})
-                    break
-                except ProviderBlocked as e:
-                    current = next(x for x in self.store.tasks(run) if x["id"] == t["id"])
-                    state = "blocked" if current["state"] == "running" else "failed"
-                    self.store.transition(run, t["id"], state, fence, {"reason": str(e)})
+                    self._settle_error(run, t["id"], fence, asyncio.CancelledError())
                     break
                 except Exception as e:
-                    current = next(x for x in self.store.tasks(run) if x["id"] == t["id"])
-                    if current["state"] == "cancel_requested":
-                        self.store.transition(run, t["id"], "cancelled", fence)
-                    elif current["state"] != "needs_reconciliation":
-                        self.store.transition(run, t["id"], "failed", fence, {"reason": str(e)[:1000], "error_type": type(e).__name__})
+                    self._settle_error(run, t["id"], fence, e)
                     break
                 current = next(x for x in self.store.tasks(run) if x["id"] == t["id"])
                 if current["state"] != "rework":
@@ -83,6 +89,10 @@ class Scheduler:
     async def _attempt(self, r, task, attempt, fence):
         run, tid = r["id"], task["id"]
         cancelled = lambda: self.cancelled(run, tid)
+        def process_event(kind, data):
+            with self.store.transaction():
+                self.store.event(run, tid, attempt, kind, {**data, "fence": fence})
+        self.codex.process_observer = process_event
         root = self.store.root / "runs" / run
         root.mkdir(parents=True, exist_ok=True)
         original = root / "original"
@@ -124,18 +134,16 @@ class Scheduler:
         (base.parent / "evidence.json").write_text(json.dumps(evidence, indent=2, ensure_ascii=False), encoding="utf-8")
         self.store.transition(run, tid, "reviewing", fence)
         if self.brain_name == "interactive":
-            self.store.save_evidence(run, tid, attempt, evidence, {"decision": "pending", "candidate_hash": evidence["candidate_hash"]})
+            self.store.save_evidence(run, tid, attempt, evidence, {"decision": "pending", "candidate_hash": evidence["candidate_hash"]}, fence)
             return
-        review = validate_review(await self.brain.review(evidence, candidate), evidence)
+        review = validate_review(await self.brain.review(evidence, candidate, cancelled=cancelled), evidence)
         if self.brain_name == "codex":
             evidence["reviewer_metadata"] = self.codex.last_metadata
         if digest(manifest(candidate)) != evidence["candidate_hash"]:
             raise OrchError("Candidate changed during review")
-        self.store.save_evidence(run, tid, attempt, evidence, review)
         if cancelled():
             raise asyncio.CancelledError()
-        self.store.transition(run, tid, {"accept": "accepted", "rework": "rework", "escalate": "escalated"}[review["decision"]], fence,
-                              {"candidate_hash": evidence["candidate_hash"], "decision": review["decision"], "brain": self.brain_name})
+        self.store.complete_review(run, tid, attempt, fence, evidence, review, self.brain_name)
 
     def _check_accepted_hash(self, run, task, path):
         row = self.store.db.execute("SELECT evidence FROM attempts WHERE run_id=? AND task_id=? AND number=?", (run, task["id"], task["attempt"])).fetchone()
@@ -158,9 +166,7 @@ class Scheduler:
         candidate = self.store.root / "runs" / run / task / str(t["attempt"]) / "candidate"
         if digest(manifest(candidate)) != evidence["candidate_hash"]:
             raise OrchError("Candidate drift invalidates review")
-        self.store.save_evidence(run, task, t["attempt"], evidence, decision)
-        state = {"accept": "accepted", "rework": "rework", "escalate": "escalated"}[decision["decision"]]
-        self.store.transition(run, task, state, payload={"decision_source": "local-user", "candidate_hash": evidence["candidate_hash"]})
+        state = self.store.complete_review(run, task, t["attempt"], t["fence"], evidence, decision, "local-user")
         if state == "rework":
             cap = json.loads(r["plan"])["max_rework_rounds"]
             self.store.transition(run, task, "queued" if t["attempt"] <= cap else "escalated")

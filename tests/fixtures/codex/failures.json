@@ -1,0 +1,10 @@
+[
+  {"name":"quota-exit-zero","exit_code":0,"events":[{"type":"turn.failed","error":{"message":"usage limit reached"}}],"blocked":true},
+  {"name":"permission-nonzero","exit_code":1,"events":[{"type":"error","message":"permission denied"}],"blocked":true},
+  {"name":"no-terminal","exit_code":0,"events":[{"type":"thread.started","thread_id":"offline"},{"type":"turn.started"}]},
+  {"name":"unknown-event","exit_code":0,"events":[{"type":"new.protocol.event"}]},
+  {"name":"null-item","exit_code":0,"events":[{"type":"item.completed","item":null}]},
+  {"name":"terminal-before-start","exit_code":0,"events":[{"type":"turn.completed"}]},
+  {"name":"duplicate-session","exit_code":0,"events":[{"type":"thread.started","thread_id":"one"},{"type":"thread.started","thread_id":"two"}]},
+  {"name":"duplicate-turn","exit_code":0,"events":[{"type":"thread.started","thread_id":"one"},{"type":"turn.started"},{"type":"turn.started"}]}
+]

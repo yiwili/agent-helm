@@ -2,7 +2,9 @@
 
 订阅优先的本地、单用户 Agent 调度器，Python 3.11+，运行和测试均无第三方依赖。
 
-当前交付是 **v0.1 夹具限定的可运行首版**：Mock / Manual / Codex CLI，结构化规划与审查，SQLite 状态、DAG、审批与幂等、独立副本、固定测试、候选哈希、取消/超时、证据导出、独立集成副本和一致性备份。真实 Codex worker 和新的独立 Codex reviewer 已在 Windows 的合成数据上联调通过。尚未达到指导书全部 P1–P7 的生产验收标准；具体差距见 [能力记录](docs/capabilities.md)。
+当前交付是 **v0.2 夹具限定的可运行首版**：Mock / Manual / Codex CLI，结构化规划与审查，SQLite 状态、DAG、审批与幂等、独立副本、固定测试、候选哈希、取消/超时、证据导出、独立集成副本、一致性备份与校验恢复。真实 Codex worker 和新的独立 Codex reviewer 已在 Windows 的合成数据上联调通过，并完成本机取消演练。尚未达到指导书全部 P1–P7 的生产验收标准；具体差距见 [能力记录](docs/capabilities.md)。
+
+实验只允许本项目和新生成的合成夹具，公司业务代码、业务仓库和备份不得用作实验输入。公开仓库不包含本地运行证据或凭据。
 
 **当前只注册 `fixture-stats` 验证器；请只运行自建、无敏感数据、可信的夹具。** 验证器先用严格 AST 白名单限制为纯 `total(values)` 求和函数，再执行固定测试；导入、属性访问、文件操作、任意函数调用和进程退出均被拒绝。进程树监督与文件副本不是 OS 安全沙箱。同一 OS 用户可编辑数据库、源文件和审批，CLI 审批入口不向 worker 暴露。禁止据此用于恶意代码或生产业务库。
 
@@ -84,3 +86,27 @@ worker 通过 stdin 收到任务与 `stats.py`，在 `read-only` sandbox 返回�
 - API、GUI、ACP、第二个真实 provider、自动合并/推送/发布、跨环境 runner 未实现且关闭。配置示例说明实际限制，不会通过改 JSON 自动获得接口。
 
 架构和验收细节见 [能力与验证记录](docs/capabilities.md)、[运行与恢复](docs/operations.md)、[设计取舍](docs/decisions.md)。
+
+## 可靠性验证
+
+默认离线测试共 62 项；已在 Windows 和 WSL 验证。Windows 的 symlink 创建测试可能因权限跳过。故障回放使用 `tests/fixtures/codex` 中明确标记的离线 fake CLI，不接触真实账号。
+
+备份、校验和恢复（示例输出目录均须不存在）：
+
+```powershell
+.\agent-orch.ps1 --state-root STATE_ROOT backup --output BACKUP_DIRECTORY
+.\agent-orch.ps1 verify-backup --backup BACKUP_DIRECTORY
+.\agent-orch.ps1 restore --backup BACKUP_DIRECTORY --output NEW_STATE_ROOT
+.\agent-orch.ps1 --state-root NEW_STATE_ROOT status RUN_ID
+.\agent-orch.ps1 --state-root NEW_STATE_ROOT integrate RUN_ID
+```
+
+恢复验证哈希和 SQLite 完整性，不自动执行任务、不覆盖原 state root；同平台恢复可迁移内部绝对路径，外部 source 目录仍需保留。v0.1 无哈希清单的旧备份不能使用此入口。
+
+真实取消 smoke 必须显式运行，最多启动两次 Codex exec，仅使用脚本生成的夹具：
+
+```sh
+PYTHONPATH=src python scripts/verify_codex_lifecycle.py --output NEW_PRIVATE_REPORT_DIRECTORY
+```
+
+本机停止证据与远端会话、计费结算严格区分。详细验收门见 [阶段 1 验收清单](docs/phase1-acceptance.md)。

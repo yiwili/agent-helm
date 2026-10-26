@@ -218,6 +218,9 @@ class Harness(unittest.TestCase):
         try:
             with self.assertRaises(OrchError):
                 manifest(self.source)
+            from agent_orch.backup import inventory
+            with self.assertRaises(OrchError):
+                inventory(link)
         finally:
             link.unlink()
 
