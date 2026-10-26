@@ -1,0 +1,10 @@
+{
+  "scope": "synthetic-fixture-only",
+  "api_budget": 0,
+  "max_rework_rounds": 2,
+  "per_run_concurrency": 1,
+  "automatic_merge": false,
+  "automatic_push": false,
+  "real_providers_default_enabled": false,
+  "note": "Describes hard-coded v0.1 limits; not a mechanism to expand runtime permissions."
+}

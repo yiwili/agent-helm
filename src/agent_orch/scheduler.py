@@ -1,0 +1,167 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import time
+import uuid
+from pathlib import Path
+
+from .adapters.base import ProviderBlocked
+from .adapters.codex_cli import CodexAdapter
+from .adapters.manual import ManualAdapter
+from .adapters.mock import MockAdapter
+from .brain import CodexBrain, MockBrain
+from .models import OrchError, digest, validate_review
+from .verifier import verify
+from .workspace import apply_files, copy_snapshot, diff, manifest
+
+
+class Scheduler:
+    def __init__(self, store, *, enable_codex=False, brain="mock", manual_result=None):
+        self.store = store
+        self.codex = CodexAdapter(enabled=enable_codex)
+        self.adapters = {"mock": MockAdapter(), "manual": ManualAdapter(manual_result), "codex": self.codex}
+        self.brain_name = brain
+        self.brain = CodexBrain(self.codex) if brain == "codex" else MockBrain()
+        self.owner = uuid.uuid4().hex
+
+    def cancelled(self, run, task):
+        return next(t for t in self.store.tasks(run) if t["id"] == task)["state"] in ("cancel_requested", "needs_reconciliation")
+
+    async def execute(self, run):
+        self.store.recover()
+        r = self.store.run(run)
+        plan = json.loads(r["plan"])
+        for t in self.store.ordered_tasks(run):
+            if t["state"] != "queued":
+                continue
+            task = json.loads(t["spec"])
+            if self.brain_name == "mock" and task["provider"] != "mock":
+                self.store.transition(run, t["id"], "blocked", payload={"reason": "Real/manual workers require codex or interactive review"})
+                continue
+            if task["provider"] == "codex" and not self.codex.enabled:
+                self.store.transition(run, t["id"], "blocked", payload={"reason": "Codex disabled; no API fallback"})
+                continue
+            while True:
+                claimed = self.store.claim(run, t["id"], self.owner, task["wall_seconds"] + 180)
+                if not claimed:
+                    break
+                attempt, fence = claimed
+                try:
+                    await self._attempt(r, task, attempt, fence)
+                except asyncio.CancelledError:
+                    current = next(x for x in self.store.tasks(run) if x["id"] == t["id"])
+                    if current["state"] == "cancel_requested":
+                        self.store.transition(run, t["id"], "cancelled", fence)
+                    else:
+                        self.store.transition(run, t["id"], "needs_reconciliation", payload={"reason": "supervisor interrupted; verify external state"})
+                    break
+                except TimeoutError:
+                    self.store.transition(run, t["id"], "timed_out", fence, {"reason": "deadline; supervised process tree stopped"})
+                    break
+                except ProviderBlocked as e:
+                    current = next(x for x in self.store.tasks(run) if x["id"] == t["id"])
+                    state = "blocked" if current["state"] == "running" else "failed"
+                    self.store.transition(run, t["id"], state, fence, {"reason": str(e)})
+                    break
+                except Exception as e:
+                    current = next(x for x in self.store.tasks(run) if x["id"] == t["id"])
+                    if current["state"] == "cancel_requested":
+                        self.store.transition(run, t["id"], "cancelled", fence)
+                    elif current["state"] != "needs_reconciliation":
+                        self.store.transition(run, t["id"], "failed", fence, {"reason": str(e)[:1000], "error_type": type(e).__name__})
+                    break
+                current = next(x for x in self.store.tasks(run) if x["id"] == t["id"])
+                if current["state"] != "rework":
+                    break
+                if attempt > plan["max_rework_rounds"]:
+                    self.store.transition(run, t["id"], "escalated", fence)
+                    break
+                self.store.transition(run, t["id"], "queued", fence)
+        return self.status(run)
+
+    async def _attempt(self, r, task, attempt, fence):
+        run, tid = r["id"], task["id"]
+        cancelled = lambda: self.cancelled(run, tid)
+        root = self.store.root / "runs" / run
+        root.mkdir(parents=True, exist_ok=True)
+        original = root / "original"
+        if not original.exists():
+            snapshot = copy_snapshot(r["source"], original)
+            if digest(snapshot) != r["source_hash"]:
+                raise OrchError("Source changed since submit")
+        if digest(manifest(original)) != r["source_hash"]:
+            raise OrchError("Original snapshot integrity mismatch")
+        # v1 is serialized. Start each task on all earlier accepted candidates.
+        previous = original
+        for row in self.store.accepted_tasks(run):
+            previous = root / row["id"] / str(row["attempt"]) / "candidate"
+            self._check_accepted_hash(run, row, previous)
+        base = root / tid / str(attempt) / "baseline"
+        candidate = base.parent / "candidate"
+        base.parent.mkdir(parents=True, exist_ok=True)
+        copy_snapshot(previous, base)
+        copy_snapshot(base, candidate)
+        baseline = await verify(base, cancelled=cancelled)
+        before_worker = digest(manifest(candidate))
+        adapter = self.adapters[task["provider"]]
+        result = await asyncio.wait_for(adapter.execute(task, candidate, attempt, cancelled), task["wall_seconds"])
+        if digest(manifest(candidate)) != before_worker:
+            raise OrchError("Read-only worker unexpectedly changed workspace")
+        if cancelled():
+            raise asyncio.CancelledError()
+        apply_files(candidate, result, task["allowed_paths"])
+        self.store.transition(run, tid, "verifying", fence)
+        verification = await verify(candidate, cancelled=cancelled)
+        changed, patch = diff(base, candidate)
+        tree = manifest(candidate)
+        evidence = {"task": task, "attempt": attempt, "provider": task["provider"], "brain": self.brain_name,
+                    "worker_claim": result["summary"], "provider_metadata": getattr(adapter, "last_metadata", None),
+                    "baseline": baseline, "baseline_hash": digest(manifest(base)), "candidate_hash": digest(tree),
+                    "manifest": tree, "changed_paths": changed, "scope_ok": set(changed) <= set(task["allowed_paths"]),
+                    "diff": patch, "verification": verification,
+                    "usage": {"tokens": None, "amount": None, "source": "unavailable"}}
+        (base.parent / "evidence.json").write_text(json.dumps(evidence, indent=2, ensure_ascii=False), encoding="utf-8")
+        self.store.transition(run, tid, "reviewing", fence)
+        if self.brain_name == "interactive":
+            self.store.save_evidence(run, tid, attempt, evidence, {"decision": "pending", "candidate_hash": evidence["candidate_hash"]})
+            return
+        review = validate_review(await self.brain.review(evidence, candidate), evidence)
+        if self.brain_name == "codex":
+            evidence["reviewer_metadata"] = self.codex.last_metadata
+        if digest(manifest(candidate)) != evidence["candidate_hash"]:
+            raise OrchError("Candidate changed during review")
+        self.store.save_evidence(run, tid, attempt, evidence, review)
+        if cancelled():
+            raise asyncio.CancelledError()
+        self.store.transition(run, tid, {"accept": "accepted", "rework": "rework", "escalate": "escalated"}[review["decision"]], fence,
+                              {"candidate_hash": evidence["candidate_hash"], "decision": review["decision"], "brain": self.brain_name})
+
+    def _check_accepted_hash(self, run, task, path):
+        row = self.store.db.execute("SELECT evidence FROM attempts WHERE run_id=? AND task_id=? AND number=?", (run, task["id"], task["attempt"])).fetchone()
+        if not row or not row[0] or digest(manifest(path)) != json.loads(row[0])["candidate_hash"]:
+            raise OrchError("Accepted candidate has drifted")
+
+    def status(self, run):
+        r = self.store.run(run)
+        return {"run_id": run, "state": r["state"], "tasks": [{k: t[k] for k in ("id", "state", "attempt")} for t in self.store.tasks(run)]}
+
+    def interactive_review(self, run, task, decision):
+        t = next((x for x in self.store.tasks(run) if x["id"] == task), None)
+        if not t or t["state"] != "reviewing":
+            raise OrchError("Task is not awaiting review")
+        r = self.store.run(run)
+        self.store.check_approval(r["approval"], json.loads(r["plan"]), r["source"])
+        row = self.store.db.execute("SELECT evidence FROM attempts WHERE run_id=? AND task_id=? AND number=?", (run, task, t["attempt"])).fetchone()
+        evidence = json.loads(row[0])
+        validate_review(decision, evidence)
+        candidate = self.store.root / "runs" / run / task / str(t["attempt"]) / "candidate"
+        if digest(manifest(candidate)) != evidence["candidate_hash"]:
+            raise OrchError("Candidate drift invalidates review")
+        self.store.save_evidence(run, task, t["attempt"], evidence, decision)
+        state = {"accept": "accepted", "rework": "rework", "escalate": "escalated"}[decision["decision"]]
+        self.store.transition(run, task, state, payload={"decision_source": "local-user", "candidate_hash": evidence["candidate_hash"]})
+        if state == "rework":
+            cap = json.loads(r["plan"])["max_rework_rounds"]
+            self.store.transition(run, task, "queued" if t["attempt"] <= cap else "escalated")
+        return self.status(run)

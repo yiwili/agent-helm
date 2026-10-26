@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "note": "Documentation template; runtime enabling is explicit --enable-codex. No arbitrary command configuration is accepted.",
+  "providers": {
+    "mock": {"enabled": true},
+    "manual": {"enabled": true},
+    "codex": {"enabled": false, "version": "codex-cli 0.164.0-alpha.11.1", "auth": "chatgpt", "concurrency": 1},
+    "claude": {"enabled": false, "implemented": false},
+    "qoder": {"enabled": false, "implemented": false},
+    "trae": {"enabled": false, "implemented": false},
+    "codebuddy": {"enabled": false, "implemented": false},
+    "api": {"enabled": false, "budget": 0},
+    "gui": {"enabled": false}
+  }
+}

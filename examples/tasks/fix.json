@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "goal": "Fix empty list total",
+  "max_rework_rounds": 2,
+  "api_budget": 0,
+  "tasks": [
+    {
+      "id": "fix-total",
+      "goal": "Fix empty list total",
+      "provider": "mock",
+      "dependencies": [],
+      "allowed_paths": [
+        "stats.py"
+      ],
+      "acceptance": [
+        "Empty list returns 0",
+        "Positive, negative and decimal totals remain correct"
+      ],
+      "verifier_profile": "fixture-stats",
+      "wall_seconds": 120,
+      "mock_behavior": "good"
+    }
+  ]
+}

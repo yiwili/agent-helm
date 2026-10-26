@@ -1,0 +1,275 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import platform
+import shutil
+import sys
+from pathlib import Path
+
+from .adapters.codex_cli import CodexAdapter
+from .brain import fixture_plan
+from .integrator import integrate
+from .models import OrchError, digest, validate_plan
+from .scheduler import Scheduler
+from .storage import Store
+from .workspace import make_fixture
+
+
+def load(path):
+    return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+
+
+def output(value):
+    print(json.dumps(value, ensure_ascii=False, indent=2))
+
+
+def state_default():
+    if os.environ.get("AGENT_ORCH_STATE"):
+        return os.environ["AGENT_ORCH_STATE"]
+    if os.name == "nt":
+        return str(Path(os.environ.get("LOCALAPPDATA", Path.home())) / "agent-helm")
+    return str(Path(os.environ.get("XDG_STATE_HOME", Path.home()/".local/state")) / "agent-helm")
+
+
+def parser():
+    p = argparse.ArgumentParser(prog="agent-orch", description="Local single-user fixture orchestrator; real providers disabled by default")
+    p.add_argument("--state-root", default=state_default())
+    sub = p.add_subparsers(dest="command", required=True)
+    d = sub.add_parser("doctor")
+    d.add_argument("--read-only", action="store_true")
+    providers = sub.add_parser("providers").add_subparsers(dest="provider_command", required=True)
+    probe = providers.add_parser("probe")
+    probe.add_argument("provider", choices=["codex", "claude", "qoder", "traecli", "codebuddy"])
+    probe.add_argument("--mode", choices=["metadata", "smoke"], default="metadata")
+    probe.add_argument("--enable-codex", action="store_true")
+    probe.add_argument("--workspace", type=Path)
+    plan = sub.add_parser("plan")
+    plan.add_argument("--request", required=True)
+    plan.add_argument("--output", required=True)
+    plan.add_argument("--brain", choices=["interactive", "codex"], default="interactive")
+    plan.add_argument("--enable-codex", action="store_true")
+    plan.add_argument("--workspace", type=Path)
+    fixture = sub.add_parser("fixture")
+    fixture.add_argument("--output", required=True)
+    approval = sub.add_parser("approve", help="Trusted local user entry; never expose as a model tool")
+    approval.add_argument("--plan", required=True)
+    approval.add_argument("--source", required=True)
+    approval.add_argument("--yes", action="store_true", help="Explicit local user approval for this exact plan")
+    approval.add_argument("--ttl", type=int, default=3600)
+    revoke = sub.add_parser("revoke")
+    revoke.add_argument("scope")
+    submit = sub.add_parser("submit")
+    submit.add_argument("--plan", required=True)
+    submit.add_argument("--source", required=True)
+    submit.add_argument("--approval-scope", required=True)
+    submit.add_argument("--idempotency-key", required=True)
+    execute = sub.add_parser("run", help="Execute persistently submitted tasks; interruption is reconciled, never blindly replayed")
+    execute.add_argument("run_id")
+    execute.add_argument("--enable-codex", action="store_true")
+    execute.add_argument("--brain", choices=["mock", "interactive", "codex"], default="mock")
+    execute.add_argument("--manual-result", type=Path)
+    execute.add_argument("--retry-blocked", action="store_true")
+    for name in ("status", "cancel", "integrate"):
+        sub.add_parser(name).add_argument("run_id")
+    events = sub.add_parser("events")
+    events.add_argument("run_id")
+    events.add_argument("--after-seq", type=int, default=0)
+    review = sub.add_parser("review")
+    review.add_argument("run_id")
+    review.add_argument("--show-evidence", action="store_true")
+    review.add_argument("--task")
+    review.add_argument("--decision", type=Path)
+    export = sub.add_parser("export")
+    export.add_argument("run_id")
+    export.add_argument("--output", required=True)
+    backup = sub.add_parser("backup")
+    backup.add_argument("--output", required=True)
+    sub.add_parser("recover")
+    demo = sub.add_parser("demo")
+    demo.add_argument("--bad-first", action="store_true")
+    demo.add_argument("--real-codex", action="store_true", help="Explicitly run two ChatGPT-login CLI calls on generated synthetic data; never API fallback")
+    demo.add_argument("--failure", choices=["bad", "timeout", "quota", "permission"])
+    return p
+
+
+async def dispatch(args):
+    command = args.command
+    if command == "doctor":
+        # Intentionally no state directory or DB creation for read-only metadata commands.
+        return {"platform": platform.platform(), "python": sys.version, "state_root": str(Path(args.state_root).resolve()),
+                "binaries": {n: shutil.which(n) for n in ("git", "codex", "claude", "qoder", "traecli", "codebuddy")},
+                "api_enabled": False, "gui_enabled": False, "merge_enabled": False,
+                "execution_scope": "synthetic fixture only; trusted local single user; snapshot is not an OS sandbox"}
+    if command == "providers":
+        if args.provider != "codex":
+            return {"provider": args.provider, "binary": shutil.which(args.provider), "adapter": "unsupported", "billing_verified": False, "production_ready": False}
+        adapter = CodexAdapter(enabled=args.enable_codex)
+        report = await adapter.probe(Path.cwd())
+        if args.mode == "smoke":
+            if not args.workspace or not args.workspace.is_dir():
+                raise OrchError("Smoke requires --workspace pointing to a disposable fixture")
+            from .schemas import RESULT_SCHEMA
+            result = await adapter.call('Return {"summary":"ORCH_PROBE_OK","files":[]}. Do not use tools.', RESULT_SCHEMA, args.workspace)
+            report["smoke_passed"] = result == {"summary": "ORCH_PROBE_OK", "files": []}
+            report["metadata"] = adapter.last_metadata
+        return report
+    if command == "plan":
+        request = load(args.request)
+        # Interactive brain submits a structured plan. No hidden model calls or synthetic reasoning claims.
+        if args.brain == "codex":
+            from .brain import CodexBrain
+            if not args.workspace or not args.workspace.is_dir():
+                raise OrchError("Codex planning requires disposable --workspace")
+            plan = await CodexBrain(CodexAdapter(enabled=args.enable_codex)).plan(request, args.workspace)
+        else:
+            plan = validate_plan(request)
+        dest = Path(args.output)
+        if dest.exists():
+            raise OrchError("Plan output already exists")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"plan": str(dest.resolve()), "plan_hash": digest(plan), "source": args.brain}
+    if command == "fixture":
+        return {"source": str(make_fixture(args.output).resolve())}
+    store = Store(args.state_root)
+    try:
+        if command == "approve":
+            plan = validate_plan(load(args.plan))
+            if not 1 <= args.ttl <= 86400:
+                raise OrchError("Approval TTL must be 1..86400 seconds")
+            if not args.yes:
+                if not sys.stdin.isatty():
+                    raise OrchError("Approval requires interactive local user or explicit --yes")
+                output({"plan": plan, "source": str(Path(args.source).resolve()), "plan_hash": digest(plan)})
+                if input("Type APPROVE to approve this exact scope: ") != "APPROVE":
+                    raise OrchError("Approval declined")
+            return {"scope_id": store.approve(plan, args.source), "plan_hash": digest(plan)}
+        if command == "revoke":
+            with store.transaction():
+                count = store.db.execute("UPDATE approvals SET revoked=1 WHERE id=?", (args.scope,)).rowcount
+            if not count:
+                raise OrchError("Unknown approval")
+            return {"revoked": args.scope}
+        if command == "submit":
+            return {"run_id": store.submit(load(args.plan), args.source, args.approval_scope, args.idempotency_key)}
+        if command == "run":
+            if args.retry_blocked:
+                for t in store.tasks(args.run_id):
+                    if t["state"] == "blocked":
+                        store.transition(args.run_id, t["id"], "queued", payload={"source": "explicit-local-retry"})
+            scheduler = Scheduler(store, enable_codex=args.enable_codex, brain=args.brain, manual_result=args.manual_result)
+            return await scheduler.execute(args.run_id)
+        if command == "status":
+            return Scheduler(store).status(args.run_id)
+        if command == "cancel":
+            return {"run_id": args.run_id, "state": store.cancel(args.run_id)}
+        if command == "events":
+            return store.events(args.run_id, args.after_seq)
+        if command == "recover":
+            return {"needs_reconciliation": store.recover()}
+        if command == "review":
+            if args.decision:
+                if not args.task:
+                    raise OrchError("Review decision requires --task")
+                return Scheduler(store).interactive_review(args.run_id, args.task, load(args.decision))
+            store.run(args.run_id)
+            return [{"task_id": r["task_id"], "attempt": r["number"], "state": r["state"], "evidence": json.loads(r["evidence"]) if r["evidence"] else None}
+                    for r in store.db.execute("SELECT * FROM attempts WHERE run_id=? ORDER BY task_id,number", (args.run_id,))]
+        if command == "integrate":
+            return await integrate(store, args.run_id)
+        if command == "backup":
+            return backup_bundle(store, args.output)
+        if command == "export":
+            return export_run(store, args.run_id, args.output)
+        if command == "demo":
+            import uuid
+            ident = uuid.uuid4().hex
+            source = make_fixture(store.root / "fixtures" / ident)
+            plan = fixture_plan(provider="codex" if args.real_codex else "mock",
+                                behavior=args.failure or ("bad-first" if args.bad_first else "good"))
+            if args.failure == "timeout":
+                plan["tasks"][0]["wall_seconds"] = 0.1
+            scope = store.approve(plan, source, actor="explicit-synthetic-demo")
+            run = store.submit(plan, source, scope, "demo-"+ident)
+            result = await Scheduler(store, enable_codex=args.real_codex, brain="codex" if args.real_codex else "mock").execute(run)
+            result["mock"] = not args.real_codex
+            result["source"] = str(source)
+            result["evidence_root"] = str(store.root / "runs" / run)
+            if result["state"] == "accepted":
+                result["integration"] = await integrate(store, run)
+            return result
+        raise OrchError("Unknown command")
+    finally:
+        store.close()
+
+
+def export_run(store, run, target):
+    r = store.run(run)
+    target = Path(target).resolve()
+    if target.exists() or target.is_relative_to(store.root):
+        raise OrchError("Export target must be new and outside state root")
+    target.mkdir(parents=True)
+    bundle = {"schema_version": 1, "run": r, "tasks": store.tasks(run), "events": store.events(run),
+              "attempts": [dict(x) for x in store.db.execute("SELECT * FROM attempts WHERE run_id=?", (run,))],
+              "reviews": [dict(x) for x in store.db.execute("SELECT * FROM reviews WHERE run_id=?", (run,))],
+              "integrations": [dict(x) for x in store.db.execute("SELECT * FROM integrations WHERE run_id=?", (run,))]}
+    (target/"run.json").write_text(json.dumps(bundle, indent=2, ensure_ascii=False), encoding="utf-8")
+    source = store.root / "runs" / run
+    if source.exists():
+        shutil.copytree(source, target/"workspaces")
+    from .workspace import manifest
+    index = manifest(target)
+    (target/"manifest.json").write_text(json.dumps(index, indent=2), encoding="utf-8")
+    return {"export": str(target), "manifest_hash": digest(index), "credentials_included": False}
+
+
+def backup_bundle(store, target):
+    target = Path(target).resolve()
+    if target.exists() or target.is_relative_to(store.root):
+        raise OrchError("Backup target must be new and outside live state root")
+    # Refuse in-flight work: DB + artifact tree need one consistent quiescent boundary.
+    active = store.db.execute("SELECT COUNT(*) FROM tasks WHERE state IN ('running','verifying','reviewing','cancel_requested')").fetchone()[0]
+    if active:
+        raise OrchError("Stop in-flight work before backup")
+    target.mkdir(parents=True)
+    with store.transaction():
+        active = store.db.execute("SELECT COUNT(*) FROM tasks WHERE state IN ('running','verifying','reviewing','cancel_requested')").fetchone()[0]
+        if active:
+            raise OrchError("In-flight work appeared before backup lock")
+        # Separate connection backup would block while this connection holds a write lock.
+        conn = __import__("sqlite3").connect(store.root/"state.db")
+        dest = __import__("sqlite3").connect(target/"state.db")
+        try:
+            conn.backup(dest)
+        finally:
+            conn.close()
+            dest.close()
+        for child in ("runs", "integrations", "fixtures"):
+            if (store.root/child).exists():
+                shutil.copytree(store.root/child, target/child)
+    (target/"backup.json").write_text(json.dumps({"schema_version": 1, "original_state_root": str(store.root), "requires_same_absolute_path": True}), encoding="utf-8")
+    return {"backup": str(target), "schema_version": 1}
+
+
+def main(argv=None):
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    try:
+        result = asyncio.run(dispatch(parser().parse_args(argv)))
+        output(result)
+        if isinstance(result, dict) and result.get("state") in ("failed", "blocked", "timed_out", "escalated", "needs_reconciliation"):
+            return 2
+        return 0
+    except (OrchError, OSError, ValueError, RuntimeError, TimeoutError) as e:
+        output({"error": type(e).__name__, "message": str(e)[:1000]})
+        return 2
+    except KeyboardInterrupt:
+        output({"state": "interrupted", "next": "recover after lease expiry; never replay uncertain side effects"})
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

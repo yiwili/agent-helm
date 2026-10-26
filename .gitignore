@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+.coverage
+providers.local.json
+policy.local.json
+.env
+state.db*
+*.log
+.env.*
+state/
+evidence/
+backups/
+*.local.json
