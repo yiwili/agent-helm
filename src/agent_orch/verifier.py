@@ -5,7 +5,7 @@ import sys
 import ast
 import json
 
-from .models import digest, utcnow
+from .models import digest, utcnow, OrchError
 from .supervisor import run_process
 from .workspace import manifest
 
@@ -49,7 +49,25 @@ raise SystemExit(0 if all(x["passed"] for x in results) else 1)
 '''
 
 
-async def verify(workspace, timeout=30, cancelled=lambda: False):
+async def verify(workspace, timeout=30, cancelled=lambda: False, profile=None):
+    if profile and profile.get("kind") == "registered":
+        from .verifier_registry import check_profile
+        check_profile(profile)
+        start = utcnow()
+        before = digest(manifest(workspace))
+        argv = [str(workspace) if a == "{workspace}" else a for a in profile["argv"]]
+        p = await run_process(argv, workspace, timeout=profile["timeout"], cancelled=cancelled)
+        check_profile(profile)
+        after = digest(manifest(workspace))
+        report = {"identity": "registered:"+profile["id"], "profile_hash": digest(profile), "argv": argv,
+                  "workspace": str(workspace), "started": start, "finished": utcnow(), "exit_code": p.exit_code,
+                  "stdout": p.stdout, "stderr": p.stderr, "candidate_hash": before, "unchanged": before == after,
+                  "passed": p.exit_code == 0 and before == after}
+        report["report_hash"] = digest(report)
+        return report
+    if profile:
+        from .verifier_registry import check_profile
+        check_profile(profile)
     before = digest(manifest(workspace))
     start = utcnow()
     argv = [sys.executable, "-I", "-B", "-c", STATS_CHECK, str(workspace)]

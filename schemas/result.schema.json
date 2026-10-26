@@ -1,33 +1,127 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "summary",
-    "files"
-  ],
-  "properties": {
-    "summary": {
-      "type": "string"
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "summary",
+        "files"
+      ],
+      "properties": {
+        "summary": {
+          "type": "string"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "content"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
     },
-    "files": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "path",
-          "content"
-        ],
-        "properties": {
-          "path": {
-            "type": "string"
-          },
-          "content": {
-            "type": "string"
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "summary",
+        "operations"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 2
+        },
+        "summary": {
+          "type": "string"
+        },
+        "operations": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "action",
+                  "path",
+                  "content"
+                ],
+                "properties": {
+                  "action": {
+                    "const": "write"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "content": {
+                    "type": "string"
+                  },
+                  "encoding": {
+                    "enum": [
+                      "utf-8",
+                      "base64"
+                    ]
+                  },
+                  "executable": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "action",
+                  "path"
+                ],
+                "properties": {
+                  "action": {
+                    "const": "delete"
+                  },
+                  "path": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "action",
+                  "path",
+                  "target"
+                ],
+                "properties": {
+                  "action": {
+                    "const": "rename"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
           }
         }
       }
     }
-  }
+  ]
 }

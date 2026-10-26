@@ -48,7 +48,8 @@
       }
     },
     "verifier_profile": {
-      "const": "fixture-stats"
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]{1,64}$"
     },
     "wall_seconds": {
       "type": "number",

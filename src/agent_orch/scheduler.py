@@ -14,7 +14,7 @@ from .brain import CodexBrain, MockBrain
 from .models import OrchError, digest, validate_review
 from .verifier import verify
 from .supervisor import ProcessTreeUnconfirmed
-from .workspace import apply_files, copy_snapshot, diff, manifest
+from .workspace import apply_files, copy_snapshot, diff, manifest, change_details
 
 
 class Scheduler:
@@ -97,9 +97,15 @@ class Scheduler:
         root.mkdir(parents=True, exist_ok=True)
         original = root / "original"
         if not original.exists():
+            from .git_workspace import source_snapshot
+            expected = self.store.submission(run).get("source_snapshot")
+            if expected and source_snapshot(r["source"]) != expected:
+                raise OrchError("Source Git baseline or tree changed since submit")
             snapshot = copy_snapshot(r["source"], original)
             if digest(snapshot) != r["source_hash"]:
                 raise OrchError("Source changed since submit")
+            if expected and source_snapshot(r["source"]) != expected:
+                raise OrchError("Source changed during snapshot copy")
         if digest(manifest(original)) != r["source_hash"]:
             raise OrchError("Original snapshot integrity mismatch")
         # v1 is serialized. Start each task on all earlier accepted candidates.
@@ -112,7 +118,8 @@ class Scheduler:
         base.parent.mkdir(parents=True, exist_ok=True)
         copy_snapshot(previous, base)
         copy_snapshot(base, candidate)
-        baseline = await verify(base, cancelled=cancelled)
+        profile = self.store.verifier_profile(run, task["verifier_profile"])
+        baseline = await verify(base, cancelled=cancelled, profile=profile)
         before_worker = digest(manifest(candidate))
         adapter = self.adapters[task["provider"]]
         result = await asyncio.wait_for(adapter.execute(task, candidate, attempt, cancelled), task["wall_seconds"])
@@ -122,13 +129,14 @@ class Scheduler:
             raise asyncio.CancelledError()
         apply_files(candidate, result, task["allowed_paths"])
         self.store.transition(run, tid, "verifying", fence)
-        verification = await verify(candidate, cancelled=cancelled)
+        verification = await verify(candidate, cancelled=cancelled, profile=profile)
         changed, patch = diff(base, candidate)
         tree = manifest(candidate)
         evidence = {"task": task, "attempt": attempt, "provider": task["provider"], "brain": self.brain_name,
                     "worker_claim": result["summary"], "provider_metadata": getattr(adapter, "last_metadata", None),
                     "baseline": baseline, "baseline_hash": digest(manifest(base)), "candidate_hash": digest(tree),
                     "manifest": tree, "changed_paths": changed, "scope_ok": set(changed) <= set(task["allowed_paths"]),
+                    "changes": change_details(base, candidate), "source_snapshot": self.store.submission(run).get("source_snapshot"),
                     "diff": patch, "verification": verification,
                     "usage": {"tokens": None, "amount": None, "source": "unavailable"}}
         (base.parent / "evidence.json").write_text(json.dumps(evidence, indent=2, ensure_ascii=False), encoding="utf-8")

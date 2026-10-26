@@ -22,7 +22,7 @@ def inventory(root):
         for name in sorted(dirs + files):
             path = Path(parent)/name
             relative = path.relative_to(root).as_posix()
-            checked(root, relative)
+            checked(root, relative, allow_git_metadata=True)
             if path.is_dir():
                 continue
             if not path.is_file():
@@ -64,7 +64,7 @@ def backup_bundle(store, target):
         finally:
             conn.close()
             dest.close()
-        for child in ("runs", "integrations", "fixtures"):
+        for child in ("runs", "integrations", "fixtures", "approvals", "verifiers"):
             if (store.root/child).exists():
                 inventory(store.root/child)  # reject links before copytree follows anything
                 shutil.copytree(store.root/child, target/child)
@@ -93,7 +93,7 @@ def verify_backup(source):
     if not isinstance(meta["files"], dict) or "state.db" not in meta["files"] or meta["manifest_hash"] != digest(meta["files"]):
         raise OrchError("Backup manifest hash mismatch")
     for relative in meta["files"]:
-        checked(source, relative)
+        checked(source, relative, allow_git_metadata=True)
     actual = inventory(source)
     actual.pop("backup.json", None)
     if actual != meta["files"]:
@@ -109,9 +109,9 @@ def restore_bundle(source, target):
     meta = verify_backup(source)
     target.mkdir(parents=True)
     for name in meta["files"]:
-        out = checked(target, name)
+        out = checked(target, name, allow_git_metadata=True)
         out.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(checked(source, name), out)
+        shutil.copy2(checked(source, name, allow_git_metadata=True), out)
     if inventory(target) != meta["files"]:
         raise OrchError("Restore copy integrity mismatch")
     old = Path(meta["original_state_root"])
@@ -152,6 +152,8 @@ def restore_bundle(source, target):
                 body = json.loads(row["body"])
                 body["workspace"] = rebase(body["workspace"])
                 report(body["verification"])
+                for value in body.get("verifications", []):
+                    report(value)
                 conn.execute("UPDATE integrations SET body=? WHERE id=?", (canonical(body), row["id"]))
     finally:
         conn.close()

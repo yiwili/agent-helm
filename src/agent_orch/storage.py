@@ -4,6 +4,7 @@ import json
 import sqlite3
 import time
 import uuid
+import re
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -77,22 +78,43 @@ class Store:
 
     def approve(self, plan, source, actor="local-user", ttl=3600):
         validate_plan(plan)
-        from .workspace import manifest
+        from .git_workspace import source_snapshot
+        from .verifier_registry import load_profile
         source = str(Path(source).resolve())
         scope = "scope-" + uuid.uuid4().hex
+        frozen = {"source_snapshot": source_snapshot(source),
+                  "verifiers": {t["verifier_profile"]: load_profile(self.root, t["verifier_profile"]) for t in plan["tasks"]}}
+        for profile in frozen["verifiers"].values():
+            if any(Path(p).is_relative_to(Path(source)) for p in profile.get("pinned_files", {})):
+                raise OrchError("Trusted acceptance programs must be outside the source workspace")
+        path = self.root/"approvals"/(scope+".json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(canonical(frozen), encoding="utf-8")
         with self.transaction():
             self.db.execute("INSERT INTO approvals VALUES(?,?,?,?,0,?)", (scope, digest(plan), source, time.time() + ttl, actor))
         return scope
 
     def submit(self, plan, source, scope, idem):
         validate_plan(plan)
-        from .workspace import manifest
+        from .git_workspace import source_snapshot
         source = str(Path(source).resolve())
         if not idem or len(idem) > 200:
             raise OrchError("Idempotency key required (max 200 characters)")
+        if not isinstance(scope, str) or not re.fullmatch(r"scope-[0-9a-f]{32}", scope):
+            raise OrchError("Invalid approval scope ID")
         body_hash = digest({"plan": plan, "source": source, "approval": scope})
+        old = self.db.execute("SELECT id,body_hash FROM runs WHERE idem=?", (idem,)).fetchone()
+        if old:
+            if old["body_hash"] != body_hash:
+                raise OrchError("Idempotency key conflicts with another request")
+            return old["id"]
+        # Reject unauthorized sources before scanning files or reading approval metadata.
+        self.check_approval(scope, plan, source)
         # Capture the exact user source at submission; never stash/reset it.
-        source_hash = digest(manifest(Path(source)))
+        snapshot = source_snapshot(source)
+        source_hash = snapshot["tree_hash"]
+        approval_file = self.root/"approvals"/(scope+".json")
+        frozen = json.loads(approval_file.read_text(encoding="utf-8")) if approval_file.exists() else None
         with self.transaction():
             old = self.db.execute("SELECT id,body_hash FROM runs WHERE idem=?", (idem,)).fetchone()
             if old:
@@ -100,12 +122,32 @@ class Store:
                     raise OrchError("Idempotency key conflicts with another request")
                 return old["id"]
             self.check_approval(scope, plan, source)
+            if frozen and snapshot != frozen["source_snapshot"]:
+                raise OrchError("Source tree, Git HEAD, or index changed after approval; reapprove")
+            if not frozen and any(t["verifier_profile"] != "fixture-stats" for t in plan["tasks"]):
+                raise OrchError("Legacy approvals cannot authorize registered verifiers")
             run = "run-" + uuid.uuid4().hex
             self.db.execute("INSERT INTO runs VALUES(?,?,?,?,?,?,?,?,?)", (run, idem, body_hash, canonical(plan), source, source_hash, scope, "queued", utcnow()))
             for task in plan["tasks"]:
                 self.db.execute("INSERT INTO tasks(run_id,id,spec,state) VALUES(?,?,?,'queued')", (run, task["id"], canonical(task)))
-            self.event(run, "", 0, "submitted", {"plan_hash": digest(plan), "scope_id": scope})
+            self.event(run, "", 0, "submitted", {"plan_hash": digest(plan), "scope_id": scope,
+                       "source_snapshot": snapshot, "verifiers": frozen["verifiers"] if frozen else {}})
         return run
+
+    def submission(self, run):
+        row = self.db.execute("SELECT payload FROM events WHERE run_id=? AND type='submitted' ORDER BY seq LIMIT 1", (run,)).fetchone()
+        return json.loads(row[0]) if row else {}
+
+    def verifier_profile(self, run, ident):
+        from .verifier_registry import builtin_profile, check_profile
+        frozen = self.submission(run).get("verifiers", {})
+        profile = frozen.get(ident)
+        if profile is None and ident == "fixture-stats":
+            profile = builtin_profile()  # compatibility with v0.1/v0.2 builtin-only runs
+        if profile is None:
+            raise OrchError("Verifier was not frozen in the approved submission")
+        check_profile(profile)
+        return profile
 
     def check_approval(self, scope, plan, source):
         a = self.db.execute("SELECT * FROM approvals WHERE id=?", (scope,)).fetchone()

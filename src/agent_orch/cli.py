@@ -55,6 +55,12 @@ def parser():
     plan.add_argument("--workspace", type=Path)
     fixture = sub.add_parser("fixture")
     fixture.add_argument("--output", required=True)
+    fixture.add_argument("--git", action="store_true", help="Initialize only the newly generated synthetic fixture")
+    verifiers = sub.add_parser("verifiers").add_subparsers(dest="verifier_command", required=True)
+    registration = verifiers.add_parser("register", help="Trusted local user entry; never expose to workers")
+    registration.add_argument("--profile", required=True)
+    registration.add_argument("--definition", required=True)
+    registration.add_argument("--yes", action="store_true")
     approval = sub.add_parser("approve", help="Trusted local user entry; never expose as a model tool")
     approval.add_argument("--plan", required=True)
     approval.add_argument("--source", required=True)
@@ -96,6 +102,7 @@ def parser():
     sub.add_parser("recover")
     demo = sub.add_parser("demo")
     demo.add_argument("--bad-first", action="store_true")
+    demo.add_argument("--git", action="store_true", help="Use a newly created real Git repository as synthetic fixture")
     demo.add_argument("--real-codex", action="store_true", help="Explicitly run two ChatGPT-login CLI calls on generated synthetic data; never API fallback")
     demo.add_argument("--failure", choices=["bad", "timeout", "quota", "permission"])
     return p
@@ -144,9 +151,20 @@ async def dispatch(args):
         dest.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
         return {"plan": str(dest.resolve()), "plan_hash": digest(plan), "source": args.brain}
     if command == "fixture":
-        return {"source": str(make_fixture(args.output).resolve())}
+        from .git_workspace import make_git_fixture
+        return {"source": str((make_git_fixture(args.output) if args.git else make_fixture(args.output)).resolve())}
     store = Store(args.state_root)
     try:
+        if command == "verifiers":
+            from .verifier_registry import register_profile
+            definition = load(args.definition)
+            if not args.yes:
+                if not sys.stdin.isatty():
+                    raise OrchError("Verifier registration requires local confirmation or explicit --yes")
+                output({"profile": args.profile, "definition": definition})
+                if input("Type REGISTER to trust this fixed verifier command: ") != "REGISTER":
+                    raise OrchError("Verifier registration declined")
+            return register_profile(store.root, args.profile, definition)
         if command == "approve":
             plan = validate_plan(load(args.plan))
             if not 1 <= args.ttl <= 86400:
@@ -195,7 +213,8 @@ async def dispatch(args):
         if command == "demo":
             import uuid
             ident = uuid.uuid4().hex
-            source = make_fixture(store.root / "fixtures" / ident)
+            from .git_workspace import make_git_fixture
+            source = (make_git_fixture if args.git else make_fixture)(store.root / "fixtures" / ident)
             plan = fixture_plan(provider="codex" if args.real_codex else "mock",
                                 behavior=args.failure or ("bad-first" if args.bad_first else "good"))
             if args.failure == "timeout":

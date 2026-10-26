@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import base64
+import binascii
 from datetime import datetime, timezone
 from pathlib import PurePosixPath, PureWindowsPath
 
@@ -29,7 +31,7 @@ def strict(obj, required, optional=()):
 
 
 def relpath(value):
-    if not isinstance(value, str) or not value or "\\" in value or ":" in value or "\0" in value:
+    if not isinstance(value, str) or not value or "\\" in value or ":" in value or any(ord(c) < 32 or ord(c) == 127 for c in value):
         raise OrchError("Expected portable relative path")
     p = PurePosixPath(value)
     if p.is_absolute() or PureWindowsPath(value).drive or any(x in ("", ".", "..") for x in value.split("/")):
@@ -71,8 +73,8 @@ def validate_plan(plan):
             relpath(p)
         if len({p.casefold() for p in t["allowed_paths"]}) != len(t["allowed_paths"]):
             raise OrchError("Case-colliding paths")
-        if t["verifier_profile"] != "fixture-stats":
-            raise OrchError("Only trusted fixture-stats verifier is registered")
+        from .verifier_registry import profile_id
+        profile_id(t["verifier_profile"])
         if type(t["wall_seconds"]) not in (int, float) or not 0.05 <= t["wall_seconds"] <= 600:
             raise OrchError("Task timeout outside 0.05..600 seconds")
         if t.get("mock_behavior", "good") not in ("good", "bad-first", "bad", "timeout", "quota", "permission"):
@@ -92,6 +94,37 @@ def validate_plan(plan):
 
 
 def validate_result(obj, allowed):
+    if isinstance(obj, dict) and "operations" in obj:
+        strict(obj, ("schema_version", "summary", "operations"))
+        if type(obj["schema_version"]) is not int or obj["schema_version"] != 2 or not isinstance(obj["summary"], str) or not isinstance(obj["operations"], list) or len(obj["operations"]) > 50:
+            raise OrchError("Invalid operations result")
+        seen = set()
+        for op in obj["operations"]:
+            if not isinstance(op, dict):
+                raise OrchError("Invalid file operation")
+            action = op.get("action")
+            if action == "write":
+                strict(op, ("action", "path", "content"), ("encoding", "executable"))
+                if not isinstance(op["content"], str) or op.get("encoding", "utf-8") not in ("utf-8", "base64"):
+                    raise OrchError("Invalid file encoding")
+                try:
+                    data = base64.b64decode(op["content"], validate=True) if op.get("encoding") == "base64" else op["content"].encode("utf-8")
+                except (ValueError, binascii.Error) as e:
+                    raise OrchError("Invalid base64 candidate") from e
+                if len(data) > 262144 or ("executable" in op and type(op["executable"]) is not bool):
+                    raise OrchError("Candidate file size or mode invalid")
+            elif action == "delete":
+                strict(op, ("action", "path"))
+            elif action == "rename":
+                strict(op, ("action", "path", "target"))
+            else:
+                raise OrchError("Unsupported file operation")
+            for p in [op["path"], *([op["target"]] if action == "rename" else [])]:
+                relpath(p)
+                if p not in allowed or p.casefold() in seen:
+                    raise OrchError("Operation scope exceeded or paths overlap")
+                seen.add(p.casefold())
+        return obj
     strict(obj, ("summary", "files"))
     if not isinstance(obj["summary"], str) or not isinstance(obj["files"], list):
         raise OrchError("Malformed worker result")

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "argv",
+    "pinned_files",
+    "timeout"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "argv": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 30,
+      "items": {
+        "type": "string"
+      }
+    },
+    "pinned_files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "timeout": {
+      "type": "number",
+      "minimum": 0.1,
+      "maximum": 120
+    }
+  }
+}

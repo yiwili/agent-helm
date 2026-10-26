@@ -2,11 +2,11 @@
 
 订阅优先的本地、单用户 Agent 调度器，Python 3.11+，运行和测试均无第三方依赖。
 
-当前交付是 **v0.2 夹具限定的可运行首版**：Mock / Manual / Codex CLI，结构化规划与审查，SQLite 状态、DAG、审批与幂等、独立副本、固定测试、候选哈希、取消/超时、证据导出、独立集成副本、一致性备份与校验恢复。真实 Codex worker 和新的独立 Codex reviewer 已在 Windows 的合成数据上联调通过，并完成本机取消演练。尚未达到指导书全部 P1–P7 的生产验收标准；具体差距见 [能力记录](docs/capabilities.md)。
+当前交付是 **v0.3 本地单用户版本**：Mock / Manual / Codex CLI，Git 基线、结构化规划与审查、SQLite 调度、审批、独立副本、可信验证器、候选哈希、取消恢复及校验备份。已在自建 Git 夹具上完成真实 Codex 修复、独立审查和集成复测，保留原有 staged / unstaged / untracked 状态。尚未达到指导书全部 P1–P7 的生产验收标准；具体差距见 [能力记录](docs/capabilities.md)。
 
 实验只允许本项目和新生成的合成夹具，公司业务代码、业务仓库和备份不得用作实验输入。公开仓库不包含本地运行证据或凭据。
 
-**当前只注册 `fixture-stats` 验证器；请只运行自建、无敏感数据、可信的夹具。** 验证器先用严格 AST 白名单限制为纯 `total(values)` 求和函数，再执行固定测试；导入、属性访问、文件操作、任意函数调用和进程退出均被拒绝。进程树监督与文件副本不是 OS 安全沙箱。同一 OS 用户可编辑数据库、源文件和审批，CLI 审批入口不向 worker 暴露。禁止据此用于恶意代码或生产业务库。
+**验证实验只用自建、无敏感数据、可信的夹具。** 内置 `fixture-stats` 先用 AST 白名单限制为纯 `total(values)` 函数，再运行固定测试；也可由本地用户显式登记独立验证程序，绑定 argv、脚本和可执行文件哈希。自定义验证器可能执行候选代码，不能继承内置 AST 的安全保证。进程树监督与副本不是 OS 沙箱；当前不用于不可信代码或生产业务库。
 
 ## 快速运行
 
@@ -81,7 +81,7 @@ worker 通过 stdin 收到任务与 `stats.py`，在 `read-only` sandbox 返回�
 - 每 run 一个顺序调度者，每 task/attempt 独立快照；DAG 输入不要求按拓扑顺序排列。首版尚无全局双并发服务或 daemon；聊天退出后提交记录保留，执行需另起持久终端运行 `run`，进程异常中止后不会自动重新执行。
 - SQLite 原子领取与 fencing token 防止旧执行提交。超期租约进入 needs_reconciliation，禁止盲目重试未知副作用。`recover` 只分类，不假装恢复供应商会话。
 - worker 默认禁止进一步委派；Codex 配置关闭 multi_agent、忽略用户 config；参数数组与 stdin 启动，不使用 shell 拼接。Windows 用 kill-on-close Job Object，Linux 用进程组。不能阻止恶意进程逃离 OS 权限边界，仍需专用账号/容器才能运行不可信任务。
-- 原目录不 stash/reset/清理。快照排除 `.git` 和缓存，用完整文件清单与模式计算树哈希；拒绝 symlink/junction、大小写冲突和危险路径。当前不支持删除/重命名/二进制/submodule 候选，不提供通用 Git 补丁合并。
+- 原目录不 stash/reset/清理。Git 基线记录 HEAD、索引和工作区状态；副本不共享 `.git`，忽略文件不复制。版本 2 候选支持新增/修改、删除、纯重命名、base64 二进制和 POSIX 执行位；拒绝越界与 symlink/junction，不支持 submodule、linked worktree 或通用 Git 补丁自动合并。
 - 固定外部验收脚本不能由 worker 改写，基线和候选使用同一脚本。测试移除模型 API 环境凭据，仍继承普通本机权限，因此只执行可信夹具。
 - API、GUI、ACP、第二个真实 provider、自动合并/推送/发布、跨环境 runner 未实现且关闭。配置示例说明实际限制，不会通过改 JSON 自动获得接口。
 
@@ -89,7 +89,7 @@ worker 通过 stdin 收到任务与 `stats.py`，在 `read-only` sandbox 返回�
 
 ## 可靠性验证
 
-默认离线测试共 62 项；已在 Windows 和 WSL 验证。Windows 的 symlink 创建测试可能因权限跳过。故障回放使用 `tests/fixtures/codex` 中明确标记的离线 fake CLI，不接触真实账号。
+阶段 1 有 62 项离线测试，阶段 2 扩展至 79 项；已在 Windows 和 WSL 验证。Windows 的 symlink 创建测试可能因权限跳过。故障回放使用 `tests/fixtures/codex` 中明确标记的离线 fake CLI，不接触真实账号。
 
 备份、校验和恢复（示例输出目录均须不存在）：
 
@@ -110,3 +110,28 @@ PYTHONPATH=src python scripts/verify_codex_lifecycle.py --output NEW_PRIVATE_REP
 ```
 
 本机停止证据与远端会话、计费结算严格区分。详细验收门见 [阶段 1 验收清单](docs/phase1-acceptance.md)。
+
+## Git 工作区与登记验证器
+
+```powershell
+.\agent-orch.ps1 --state-root PRIVATE_STATE_ROOT demo --git --bad-first
+.\agent-orch.ps1 fixture --git --output NEW_SYNTHETIC_SOURCE
+```
+
+Git 源必须有 HEAD commit。审批后修改 HEAD、索引或选中文件，需要重新审批；提交后漂移不能启动候选，集成前漂移也会拒绝。源中的 staged、unstaged、untracked 和已删除内容保留；忽略文件不读取、不复制。子模块、冲突索引、Git filters、config includes、共享对象库及 linked worktree 均暂不支持。
+
+自定义验收先由可信本地用户登记，再在计划的 `verifier_profile` 中引用 ID：
+
+```powershell
+.\agent-orch.ps1 --state-root PRIVATE_STATE_ROOT verifiers register --profile my-check-v1 --definition PRIVATE_DEFINITION_JSON
+```
+
+定义符合 `schemas/verifier.schema.json`，argv 使用绝对可执行文件、仓库外的固定验收脚本，以及一个独立的 `{workspace}` 参数；`pinned_files` 显式列出脚本。示例脚本见 `examples/verifiers/message_check.py`。登记和计划审批默认都需本地终端确认；不要向模型暴露这些入口。profile 不可覆盖，修改验收程序需新 ID、新计划审批；不接受 worker 提供的命令。
+
+`schema_version=2` 的结果使用 `operations`，版本 1 的 `files` 继续兼容。重命名的源、目标都必须获批；Windows 不支持执行位变更。Codex 内置 worker 当前仍输出版本 1 文本文件，版本 2 已由 Manual/契约测试验证。新建 Git 夹具的真实调用需显式开启：
+
+```sh
+PYTHONPATH=src python scripts/verify_git_workspace.py --output NEW_PRIVATE_DIRECTORY --real-codex
+```
+
+此脚本不接受现有仓库路径，只创建合成 Git 仓库。详见 [阶段 2 验收清单](docs/phase2-acceptance.md)。

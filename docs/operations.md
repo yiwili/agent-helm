@@ -4,7 +4,9 @@
 
 使用 CLI 全局 `--state-root`，或环境变量 `AGENT_ORCH_STATE`。Windows 默认 `%LOCALAPPDATA%\agent-helm`，Linux 默认 `$XDG_STATE_HOME/agent-helm` 或 `~/.local/state/agent-helm`。每个环境必须拥有独立目录和数据库。不要让 Windows / WSL / 网络共享同时打开同一库。
 
-目录包括 state.db、runs、fixtures、integrations。所有随机 ID 由程序生成，源仓库不存运行数据。UTC 用于事件时间。events 的 seq 是全库游标，attempt_seq 是 run/task/attempt 内序号；event_id 相同但内容不同会被拒绝。
+目录包括 state.db、runs、fixtures、integrations、approvals、verifiers。所有随机 ID 由程序生成，源仓库不存运行数据。UTC 用于事件时间。events 的 seq 是全库游标，attempt_seq 是 run/task/attempt 内序号；event_id 相同但内容不同会被拒绝。
+
+v0.3 的新审批冻结源树/Git 基线与 verifier 定义；审批到提交期间 HEAD、索引或选中文件变化需重新审批。登记的脚本和可执行文件必须保持原哈希，验收程序更改需要新 profile ID。源码工作副本与 state root 内不得放可信验收脚本。
 
 ## 中断与恢复
 
@@ -24,12 +26,13 @@
 ## 一致性备份与恢复
 
 1. 停止新派发，取消/完成在途任务，并停止其他进程执行集成或导出写操作。
-2. `backup --output NEW_DIRECTORY` 拒绝 running/verifying/reviewing/cancel_requested/needs_reconciliation。与集成操作共用跨进程维护锁，在 SQLite 写锁下用官方 backup API 备份数据库，并复制 runs/fixtures/integrations。写入完整 SHA-256/大小清单，检查复制期间变化及 SQLite 完整性；不直接复制运行中的主数据库而丢掉 WAL。
+2. `backup --output NEW_DIRECTORY` 拒绝 running/verifying/reviewing/cancel_requested/needs_reconciliation。与集成操作共用跨进程维护锁，在 SQLite 写锁下用官方 backup API 备份数据库，并复制 runs/fixtures/integrations/approvals/verifiers。写入完整 SHA-256/大小清单，检查复制期间变化及 SQLite 完整性；不直接复制运行中的主数据库而丢掉 WAL。state root 内的合成 Git 源会备份其 `.git`，候选副本仍不携带 `.git`；因此备份必须保持私有，不能随公开代码发布。
 3. 保留原 state root 的完整目录（包括 WAL/SHM）作为回退。恢复时先停止所有使用该 state root 的进程。
 4. 运行 `verify-backup --backup BACKUP_DIRECTORY`。文件缺失、修改、多余文件、非法路径、symlink/junction、数据库不完整或版本不支持均拒绝。清单用于发现损坏，不是来源认证；只恢复自己信任的备份。
 5. `restore --backup BACKUP_DIRECTORY --output NEW_STATE_ROOT` 只写入不存在的新目录，先验证再复制。支持同平台重定位 state root 内部路径，重算测试报告哈希，并保留审批/事件/候选对象。外部 source 路径保持原样，仍需原目录。不会执行任何任务或改写原 state root。
 6. 逐一 `status`、`events`、`review --show-evidence`，核对候选哈希，然后在独立副本运行 `integrate` 复测。恢复结果显式记录 replayed_tasks=0。
 7. v0.1 旧备份没有完整清单，v0.2 的恢复入口拒绝；保留旧程序并按其原路径恢复规则人工处理，不混合数据库/WAL。当前不支持跨 OS 恢复或 schema 升降级。恢复失败会保留目标目录供检查，原数据不被删除或覆盖。
+8. 仓库外的可信验收脚本、Python/其他解释器不随备份复制，恢复后仍需保留其原路径和原哈希。不要为通过验收而改写 profile 或移除哈希检查；需要迁移时登记新 ID 并重新规划/审批。
 
 ## 升级和代码回退
 
