@@ -56,11 +56,13 @@ def validate_plan(plan):
         raise OrchError("Plan requires 1..100 tasks")
     ids = set()
     for t in plan["tasks"]:
-        strict(t, ("id", "goal", "provider", "dependencies", "allowed_paths", "acceptance", "verifier_profile", "wall_seconds"), ("mock_behavior",))
+        strict(t, ("id", "goal", "provider", "dependencies", "allowed_paths", "acceptance", "verifier_profile", "wall_seconds"), ("mock_behavior", "milestone_review"))
+        if "milestone_review" in t and type(t["milestone_review"]) is not bool:
+            raise OrchError("milestone_review must be boolean")
         if not isinstance(t["id"], str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", t["id"]) or t["id"] in ids:
             raise OrchError("Duplicate or invalid task ID")
         ids.add(t["id"])
-        if t["provider"] not in ("mock", "manual", "codex"):
+        if t["provider"] not in ("mock", "manual", "codex", "qoder-cn"):
             raise OrchError("Unknown or unimplemented provider")
         if not isinstance(t["goal"], str) or not t["goal"].strip():
             raise OrchError("Task goal required")
@@ -151,6 +153,31 @@ def validate_review(obj, evidence):
         raise OrchError("Unknown evidence reference")
     if obj["decision"] == "accept" and (not evidence["verification"]["passed"] or not evidence["scope_ok"]):
         raise OrchError("Acceptance gate failed")
+    return obj
+
+
+def validate_diagnosis(obj, task):
+    strict(obj, ("summary", "proposed_paths", "checks", "risks", "needs_scope_change"))
+    if not isinstance(obj["summary"], str) or not obj["summary"].strip() or type(obj["needs_scope_change"]) is not bool:
+        raise OrchError("Invalid diagnosis")
+    for key in ("proposed_paths", "checks", "risks"):
+        if not isinstance(obj[key], list) or any(not isinstance(x, str) for x in obj[key]):
+            raise OrchError("Malformed diagnosis fields")
+    if not obj["proposed_paths"] or not obj["checks"]:
+        raise OrchError("Diagnosis requires scoped paths and concrete checks")
+    for path in obj["proposed_paths"]:
+        relpath(path)
+    return obj
+
+
+def validate_milestone_review(obj, bundle):
+    strict(obj, ("decision", "milestone_hash", "reasons"))
+    if obj["decision"] not in ("continue", "rework", "escalate") or obj["milestone_hash"] != digest(bundle):
+        raise OrchError("Milestone decision or hash mismatch")
+    if not isinstance(obj["reasons"], list) or not obj["reasons"] or any(not isinstance(x, str) or not x for x in obj["reasons"]):
+        raise OrchError("Milestone review requires concrete reasons")
+    if obj["decision"] == "continue" and (bundle["diagnosis"]["needs_scope_change"] or not set(bundle["diagnosis"]["proposed_paths"]) <= set(bundle["task"]["allowed_paths"])):
+        raise OrchError("Milestone cannot broaden approved scope")
     return obj
 
 

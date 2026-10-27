@@ -24,7 +24,8 @@
       "enum": [
         "mock",
         "manual",
-        "codex"
+        "codex",
+        "qoder-cn"
       ]
     },
     "dependencies": {
@@ -65,6 +66,9 @@
         "quota",
         "permission"
       ]
+    },
+    "milestone_review": {
+      "type": "boolean"
     }
   }
 }

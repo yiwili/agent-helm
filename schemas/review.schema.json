@@ -28,8 +28,15 @@
     },
     "evidence_refs": {
       "type": "array",
+      "minItems": 1,
       "items": {
-        "type": "string"
+        "type": "string",
+        "enum": [
+          "diff",
+          "verification",
+          "baseline",
+          "scope"
+        ]
       }
     }
   }

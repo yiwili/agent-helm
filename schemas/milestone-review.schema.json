@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "decision",
+    "milestone_hash",
+    "reasons"
+  ],
+  "properties": {
+    "decision": {
+      "enum": [
+        "continue",
+        "rework",
+        "escalate"
+      ]
+    },
+    "milestone_hash": {
+      "type": "string"
+    },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

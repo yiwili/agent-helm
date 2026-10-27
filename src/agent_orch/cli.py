@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from .adapters.codex_cli import CodexAdapter
+from .adapters.qoder_cn_cli import QoderCNAdapter
 from .brain import fixture_plan
 from .backup import backup_bundle, restore_bundle, verify_backup
 from .integrator import integrate
@@ -43,15 +44,20 @@ def parser():
     d.add_argument("--read-only", action="store_true")
     providers = sub.add_parser("providers").add_subparsers(dest="provider_command", required=True)
     probe = providers.add_parser("probe")
-    probe.add_argument("provider", choices=["codex", "claude", "qoder", "traecli", "codebuddy"])
+    probe.add_argument("provider", choices=["codex", "qoder-cn", "claude", "qoder", "traecli", "codebuddy"])
     probe.add_argument("--mode", choices=["metadata", "smoke"], default="metadata")
     probe.add_argument("--enable-codex", action="store_true")
+    probe.add_argument("--enable-qoder-cn", action="store_true")
+    probe.add_argument("--qoder-cn-bin")
     probe.add_argument("--workspace", type=Path)
     plan = sub.add_parser("plan")
     plan.add_argument("--request", required=True)
     plan.add_argument("--output", required=True)
-    plan.add_argument("--brain", choices=["interactive", "codex"], default="interactive")
+    plan.add_argument("--brain", choices=["interactive", "codex", "qoder-cn"], default="interactive")
+    plan.add_argument("--worker-provider", choices=["codex", "qoder-cn", "manual", "mock"], default="codex")
     plan.add_argument("--enable-codex", action="store_true")
+    plan.add_argument("--enable-qoder-cn", action="store_true")
+    plan.add_argument("--qoder-cn-bin")
     plan.add_argument("--workspace", type=Path)
     fixture = sub.add_parser("fixture")
     fixture.add_argument("--output", required=True)
@@ -76,7 +82,9 @@ def parser():
     execute = sub.add_parser("run", help="Execute persistently submitted tasks; interruption is reconciled, never blindly replayed")
     execute.add_argument("run_id")
     execute.add_argument("--enable-codex", action="store_true")
-    execute.add_argument("--brain", choices=["mock", "interactive", "codex"], default="mock")
+    execute.add_argument("--enable-qoder-cn", action="store_true")
+    execute.add_argument("--qoder-cn-bin")
+    execute.add_argument("--brain", choices=["mock", "interactive", "codex", "qoder-cn"], default="mock")
     execute.add_argument("--manual-result", type=Path)
     execute.add_argument("--retry-blocked", action="store_true")
     for name in ("status", "cancel", "integrate"):
@@ -122,9 +130,9 @@ async def dispatch(args):
                 "api_enabled": False, "gui_enabled": False, "merge_enabled": False,
                 "execution_scope": "synthetic fixture only; trusted local single user; snapshot is not an OS sandbox"}
     if command == "providers":
-        if args.provider != "codex":
+        if args.provider not in ("codex", "qoder-cn"):
             return {"provider": args.provider, "binary": shutil.which(args.provider), "adapter": "unsupported", "billing_verified": False, "production_ready": False}
-        adapter = CodexAdapter(enabled=args.enable_codex)
+        adapter = CodexAdapter(enabled=args.enable_codex) if args.provider == "codex" else QoderCNAdapter(enabled=args.enable_qoder_cn, executable=args.qoder_cn_bin)
         report = await adapter.probe(Path.cwd())
         if args.mode == "smoke":
             if not args.workspace or not args.workspace.is_dir():
@@ -137,11 +145,12 @@ async def dispatch(args):
     if command == "plan":
         request = load(args.request)
         # Interactive brain submits a structured plan. No hidden model calls or synthetic reasoning claims.
-        if args.brain == "codex":
+        if args.brain in ("codex", "qoder-cn"):
             from .brain import CodexBrain
             if not args.workspace or not args.workspace.is_dir():
-                raise OrchError("Codex planning requires disposable --workspace")
-            plan = await CodexBrain(CodexAdapter(enabled=args.enable_codex)).plan(request, args.workspace)
+                raise OrchError("Real planning requires disposable --workspace")
+            adapter = CodexAdapter(enabled=args.enable_codex) if args.brain == "codex" else QoderCNAdapter(enabled=args.enable_qoder_cn, executable=args.qoder_cn_bin)
+            plan = await CodexBrain(adapter).plan(request, args.workspace, worker_provider=args.worker_provider)
         else:
             plan = validate_plan(request)
         dest = Path(args.output)
@@ -186,7 +195,8 @@ async def dispatch(args):
                 for t in store.tasks(args.run_id):
                     if t["state"] == "blocked":
                         store.transition(args.run_id, t["id"], "queued", payload={"source": "explicit-local-retry"})
-            scheduler = Scheduler(store, enable_codex=args.enable_codex, brain=args.brain, manual_result=args.manual_result)
+            scheduler = Scheduler(store, enable_codex=args.enable_codex, enable_qoder_cn=args.enable_qoder_cn,
+                                  qoder_cn_bin=args.qoder_cn_bin, brain=args.brain, manual_result=args.manual_result)
             return await scheduler.execute(args.run_id)
         if command == "status":
             return Scheduler(store).status(args.run_id)

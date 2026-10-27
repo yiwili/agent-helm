@@ -2,7 +2,7 @@
 
 订阅优先的本地、单用户 Agent 调度器，Python 3.11+，运行和测试均无第三方依赖。
 
-当前交付是 **v0.3 本地单用户版本**：Mock / Manual / Codex CLI，Git 基线、结构化规划与审查、SQLite 调度、审批、独立副本、可信验证器、候选哈希、取消恢复及校验备份。已在自建 Git 夹具上完成真实 Codex 修复、独立审查和集成复测，保留原有 staged / unstaged / untracked 状态。尚未达到指导书全部 P1–P7 的生产验收标准；具体差距见 [能力记录](docs/capabilities.md)。
+当前交付是 **v0.4 本地单用户版本**：Mock / Manual / Codex CLI / Qoder CN CLI，Git 基线、结构化规划与审查、诊断里程碑、返工反馈、SQLite 调度、审批、独立副本、可信验证器、候选哈希、取消恢复及校验备份。已在自建 Git 夹具上完成 Codex 主脑与 Qoder CN worker 的跨产品规划、诊断审查、两轮修复和集成复测，保留原有 staged / unstaged / untracked 状态。尚未达到指导书全部 P1–P7 的生产验收标准；具体差距见 [能力记录](docs/capabilities.md)。
 
 实验只允许本项目和新生成的合成夹具，公司业务代码、业务仓库和备份不得用作实验输入。公开仓库不包含本地运行证据或凭据。
 
@@ -72,7 +72,24 @@ worker 通过 stdin 收到任务与 `stats.py`，在 `read-only` sandbox 返回�
 
 不指定 `--brain codex` 时，`plan` 只校验并保存交互主脑提交的结构化计划，不伪造模型推理。`approve` 默认要求本地终端输入 APPROVE；自动化测试的 `--yes` 是可信本地用户的显式审批开关，不应暴露给模型。审批绑定计划哈希、源码目录与有效期；修改计划后需重新审批。`revoke SCOPE_ID` 阻止后续领取任务。
 
-`run` 默认 mock reviewer，仅允许 mock worker。真实或 Manual worker 必须使用 `--brain codex` 或 `--brain interactive`。人工流程：worker provider 选 manual，`--manual-result response.json` 提交符合 `result.schema.json` 的候选内容，`--brain interactive` 将任务停在 reviewing；读取证据后用 `review RUN_ID --task TASK_ID --decision review.json` 提交人工决策。文件变化或测试失败均不能 accept。审批等待不无限续租，过期恢复需人工核对。
+`run` 默认 mock reviewer，仅允许 mock worker。真实或 Manual worker 必须使用 `--brain codex`、`--brain qoder-cn` 或 `--brain interactive`。人工流程：worker provider 选 manual，`--manual-result response.json` 提交符合 `result.schema.json` 的候选内容，`--brain interactive` 将任务停在 reviewing；读取证据后用 `review RUN_ID --task TASK_ID --decision review.json` 提交人工决策。文件变化或测试失败均不能 accept。审批等待不无限续租，过期恢复需人工核对。
+
+## Qoder CN 跨产品流程
+
+Qoder CN CLI 必须精确匹配 `1.1.80` 并完成其官方登录。提供原生可执行文件绝对路径；不接受 shell 包装器。默认不启用真实调用，不把 Qoder 返回的零 token/金额字段解释为免费，实际 credits 记录在私有证据中。
+
+```powershell
+.\agent-orch.ps1 providers probe qoder-cn --qoder-cn-bin $env:AGENT_ORCH_QODER_CN
+# 显式消费两个产品的额度；只生成新的无敏感 Git 夹具。
+$env:PYTHONPATH = "$PWD\src"
+& $env:AGENT_ORCH_PYTHON scripts/verify_cross_provider.py --output "$env:TEMP\helm-cross-provider-new" --qoder-cn-bin $env:AGENT_ORCH_QODER_CN --inject-first-fault
+```
+
+`--output` 必须不存在，且位于源码仓库之外。此脚本包含可信测试程序的显式审批，仅用于合成样例。`--inject-first-fault` 会保存真实 worker 原响应，再由测试程序故意破坏首轮候选以验收返工；不能据此声称模型出错。省略该选项则不注入错误。可用 `--brain qoder-cn --worker codex` 交换角色，但本次真实验收只覆盖默认方向。
+
+真实规划要求 `milestone_review=true`：worker 先诊断，主脑批准后才实现；越界诊断停止并要求新计划/审批。返工携带绑定前一候选哈希的测试、diff 和审查反馈；基线未变时复用已批准诊断。执行期间续租，租约丢失需核对。它仍不是通用交互暂停/恢复系统。
+
+Claude CLI 经现有 CC Switch 自定义 API 的独立小样本审查单独记录，不是调度器的自动 fallback；实际模型、预算与验收边界见 [阶段 3 验收](docs/phase3-acceptance.md)。TRAE 按用户要求跳过，未使用桌面自动化完成任务。
 
 故障演示：`demo --failure bad`（三次失败后升级人工）、`demo --failure quota`、`demo --failure permission`、`demo --failure timeout`；失败/阻塞的 CLI 退出码为 2。`cancel RUN_ID` 可从第二个终端取消；运行中的进程确认停止前保持 cancel_requested。离线测试还覆盖进程子树、租约、重启、数据库事务回滚、错误 JSON、路径越界和基线漂移。
 
@@ -89,7 +106,7 @@ worker 通过 stdin 收到任务与 `stats.py`，在 `read-only` sandbox 返回�
 
 ## 可靠性验证
 
-阶段 1 有 62 项离线测试，阶段 2 扩展至 79 项；已在 Windows 和 WSL 验证。Windows 的 symlink 创建测试可能因权限跳过。故障回放使用 `tests/fixtures/codex` 中明确标记的离线 fake CLI，不接触真实账号。
+阶段 3 扩展至 96 项离线测试；Windows 的 symlink 创建测试可能因权限跳过。故障回放使用明确标记的离线 fake CLI，不接触真实账号。真实跨产品脚本必须单独显式运行，不属于默认测试。
 
 备份、校验和恢复（示例输出目录均须不存在）：
 

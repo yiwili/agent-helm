@@ -243,7 +243,8 @@ class Store:
             if decision["decision"] != "accept":
                 raise OrchError("No accepted review for this candidate")
         self.db.execute("UPDATE tasks SET state=?,fence=fence+? WHERE run_id=? AND id=?", (state, int(state == "needs_reconciliation"), run, task))
-        self.db.execute("UPDATE attempts SET state=? WHERE run_id=? AND task_id=? AND number=?", (state, run, task, t["attempt"]))
+        if state != "queued":
+            self.db.execute("UPDATE attempts SET state=? WHERE run_id=? AND task_id=? AND number=?", (state, run, task, t["attempt"]))
         self.event(run, task, t["attempt"], state, payload or {})
         self._refresh(run)
 
@@ -298,6 +299,13 @@ class Store:
             item["payload"] = json.loads(item["payload"])
             result.append(item)
         return result
+
+    def attempt_event(self, run, task, attempt, fence, kind, payload):
+        with self.transaction():
+            current = self.db.execute("SELECT * FROM tasks WHERE run_id=? AND id=?", (run, task)).fetchone()
+            if not current or current["attempt"] != attempt or current["fence"] != fence or current["state"] != "running" or (current["lease"] or 0) < time.time() or not self.authorized(run):
+                raise OrchError("Cannot record a milestone for a stale or unauthorized attempt")
+            self.event(run, task, attempt, kind, payload)
 
     def save_evidence(self, run, task, attempt, evidence, review, fence=None):
         with self.transaction():

@@ -1,14 +1,14 @@
-# 能力与证据（2026-10-26，Asia/Shanghai）
+# 能力与证据（2026-10-27，Asia/Shanghai）
 
 | 阶段 | 已实现/验证 | 尚未满足的退出条件 |
 |---|---|---|
-| P0 | 空目录探测；Windows Codex 路径、版本、help、ChatGPT login status；WSL Ubuntu Python/Git；官方文档复核 | 其他 CLI 在 Windows PATH 和 WSL 当前探测中未找到；不代表未安装桌面产品 |
+| P0 | Codex、Qoder CN、Claude CLI 路径/版本/help/认证探测；Windows 与 WSL Python/Git；官方文档复核 | 桌面产品安装不等于 CLI 可用；TRAE 按用户要求跳过 |
 | P1 | Python 标准库 CLI、严格契约、SQLite 表、DAG、Mock/Manual、事件、审批、幂等、状态转换、有限返工 | 无常驻调度服务、全局并发与供应商动态熔断服务；当前每 run 串行 |
 | P2 | 独立快照、Git HEAD/index/status 基线、原目录保护、可信验收登记与哈希、文本/二进制/重命名/模式差异、审查门、集成重放 | 无 OS 级完整隔离；符号链接存在 TOCTOU 风险；仅以可信合成夹具验证，不保证任意业务代码兼容 |
-| P3 | Windows Codex 0.164.0-alpha.11.1；真实只读 JSON 候选、独立验证、ChatGPT 登录认证；worker/reviewer 本机取消与 Job 归零已验证 | 没有实际供应商权限/额度故障注入、沙箱越界 canary 读写验证、远端 session 恢复、账单核实；WSL 无原生 Codex |
-| P4 | CodexBrain 规划/新会话审查；交互主脑计划/审批；JSON/DAG 校验，候选哈希绑定，Mock 两轮返工上限 | 没有真实主脑返工演练和通用里程碑暂停/恢复；同供应商独立会话存在相关错误风险 |
-| P5 | 未启用 | 缺少第二个已安装、认证、计费验证的真实 provider；不能称已验证跨产品调度 |
-| P6 | API/GUI/Windows↔WSL runner 全部关闭 | 按后续具体授权再实现 |
+| P3 | Windows Codex 0.164.0-alpha.11.1、Qoder CN 1.1.80；真实只读 JSON 候选、独立验证；Codex worker/reviewer 本机取消与 Job 归零已验证 | 没有实际供应商权限/额度故障注入、沙箱越界 canary 读写验证、远端 session 恢复、账单核实；Qoder 专项取消 smoke 未做 |
+| P4 | CodexBrain 规划/新会话审查；交互主脑计划/审批；诊断先审查、候选哈希绑定、真实反馈返工、租约续期 | 无通用里程碑交互暂停/恢复；同供应商独立会话存在相关错误风险 |
+| P5 | Codex 主脑 + Qoder CN worker 在新建合成 Git 仓库完成规划、诊断审查、故障注入返工、最终审查与集成复测 | 计费未核实，不能称订阅自动路由或生产就绪；未真实验收交换角色方向 |
+| P6 | Claude CLI 经 CC Switch 自定义 API 的连通性通过；按次/总额预留；结构化审查被契约拒绝 | 未完成 Claude 审查接入；不是自动 API fallback；实际模型 GLM；GUI 与 Windows↔WSL runner 仍关闭，TRAE 跳过 |
 | P7 | SQLite backup API、维护锁、完整哈希清单与校验、同平台新目录恢复、恢复库 integrity_check 与已接受 run 复测；崩溃后禁止重放 | 无跨 schema 升级/降级迁移、远端 agent session 恢复、日志轮转/保留策略和全局监督服务 |
 
 真实运行数据保存在仓库外的私有 state root，不提交账号信息、原始日志和带本机绝对路径的证据包。
@@ -32,4 +32,4 @@
 - [Codex 非交互模式](https://learn.chatgpt.com/docs/non-interactive-mode)：exec、JSONL、output-schema；实现同时对照本机 exec --help。
 - [Codex 认证](https://learn.chatgpt.com/docs/auth)：ChatGPT 登录与 API key 认证不同。登录类型不能证明已核实账单或剩余额度。
 
-Claude、Qoder、TRAE、CodeBuddy、WorkBuddy 本次未接入，不对账号权益或接口行为作推断。
+阶段 3 接入 Qoder CN 调度器并新增 17 项测试，共 96 项；真实闭环和 Claude CLI 独立审查详见 [阶段 3 验收](phase3-acceptance.md)。Claude CLI 没有接入自动调度，TRAE 跳过，CodeBuddy、WorkBuddy 未接入。不对未核实账号权益或账单作推断。

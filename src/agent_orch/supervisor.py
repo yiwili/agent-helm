@@ -19,7 +19,8 @@ class ProcessTreeUnconfirmed(OrchError):
 
 
 def safe_env(auth=False):
-    keep = {"PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "COMSPEC", "LANG", "LC_ALL", "USERPROFILE", "HOME", "LOCALAPPDATA", "APPDATA"}
+    keep = {"PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
+            "COMMONPROGRAMFILES", "COMMONPROGRAMFILES(X86)", "HOMEDRIVE", "HOMEPATH", "WINDIR", "TEMP", "TMP", "COMSPEC", "LANG", "LC_ALL", "USERPROFILE", "HOME", "LOCALAPPDATA", "APPDATA"}
     env = {k: v for k, v in os.environ.items() if k.upper() in keep}
     env.update({"PYTHONDONTWRITEBYTECODE": "1", "PYTHONIOENCODING": "utf-8"})
     if auth and "CODEX_HOME" in os.environ:

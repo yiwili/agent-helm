@@ -10,25 +10,41 @@ from .adapters.base import ProviderBlocked
 from .adapters.codex_cli import CodexAdapter
 from .adapters.manual import ManualAdapter
 from .adapters.mock import MockAdapter
+from .adapters.qoder_cn_cli import QoderCNAdapter
 from .brain import CodexBrain, MockBrain
-from .models import OrchError, digest, validate_review
+from .models import OrchError, digest, validate_review, validate_diagnosis, validate_milestone_review
 from .verifier import verify
 from .supervisor import ProcessTreeUnconfirmed
 from .workspace import apply_files, copy_snapshot, diff, manifest, change_details
 
 
 class Scheduler:
-    def __init__(self, store, *, enable_codex=False, brain="mock", manual_result=None):
+    def __init__(self, store, *, enable_codex=False, enable_qoder_cn=False, qoder_cn_bin=None, brain="mock", manual_result=None):
         self.store = store
         self.codex = CodexAdapter(enabled=enable_codex)
-        self.adapters = {"mock": MockAdapter(), "manual": ManualAdapter(manual_result), "codex": self.codex}
+        self.qoder_cn = QoderCNAdapter(enabled=enable_qoder_cn, executable=qoder_cn_bin)
+        self.adapters = {"mock": MockAdapter(), "manual": ManualAdapter(manual_result), "codex": self.codex, "qoder-cn": self.qoder_cn}
         self.brain_name = brain
-        self.brain = CodexBrain(self.codex) if brain == "codex" else MockBrain()
+        self.brain_adapter = self.adapters.get(brain)
+        self.brain = CodexBrain(self.brain_adapter) if brain in ("codex", "qoder-cn") else MockBrain()
         self.owner = uuid.uuid4().hex
+        self.lost_leases = set()
 
     def cancelled(self, run, task):
         t = next(t for t in self.store.tasks(run) if t["id"] == task)
-        return t["state"] in ("cancel_requested", "needs_reconciliation") or (t["lease"] or 0) < time.time() or not self.store.authorized(run)
+        return (run, task) in self.lost_leases or t["state"] in ("cancel_requested", "needs_reconciliation") or (t["lease"] or 0) < time.time() or not self.store.authorized(run)
+
+    async def _heartbeat(self, run, task, fence):
+        try:
+            while True:
+                await asyncio.sleep(5)
+                if not self.store.renew(run, task, fence, 180):
+                    self.lost_leases.add((run, task))
+                    return
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            self.lost_leases.add((run, task))
 
     def _settle_error(self, run, task, fence, error):
         current = next(x for x in self.store.tasks(run) if x["id"] == task)
@@ -59,16 +75,20 @@ class Scheduler:
                 continue
             task = json.loads(t["spec"])
             if self.brain_name == "mock" and task["provider"] != "mock":
-                self.store.transition(run, t["id"], "blocked", payload={"reason": "Real/manual workers require codex or interactive review"})
+                self.store.transition(run, t["id"], "blocked", payload={"reason": "Real/manual workers require codex, qoder-cn or interactive review"})
                 continue
-            if task["provider"] == "codex" and not self.codex.enabled:
-                self.store.transition(run, t["id"], "blocked", payload={"reason": "Codex disabled; no API fallback"})
+            if task["provider"] in ("codex", "qoder-cn") and not self.adapters[task["provider"]].enabled:
+                self.store.transition(run, t["id"], "blocked", payload={"reason": task["provider"]+" disabled; no API fallback"})
+                continue
+            if self.brain_name in ("codex", "qoder-cn") and not self.brain_adapter.enabled:
+                self.store.transition(run, t["id"], "blocked", payload={"reason": "Selected review provider is disabled"})
                 continue
             while True:
                 claimed = self.store.claim(run, t["id"], self.owner, task["wall_seconds"] + 360)
                 if not claimed:
                     break
                 attempt, fence = claimed
+                heartbeat = asyncio.create_task(self._heartbeat(run, t["id"], fence))
                 try:
                     await self._attempt(r, task, attempt, fence)
                 except asyncio.CancelledError:
@@ -77,6 +97,9 @@ class Scheduler:
                 except Exception as e:
                     self._settle_error(run, t["id"], fence, e)
                     break
+                finally:
+                    heartbeat.cancel()
+                    await asyncio.gather(heartbeat, return_exceptions=True)
                 current = next(x for x in self.store.tasks(run) if x["id"] == t["id"])
                 if current["state"] != "rework":
                     break
@@ -93,6 +116,7 @@ class Scheduler:
             with self.store.transaction():
                 self.store.event(run, tid, attempt, kind, {**data, "fence": fence})
         self.codex.process_observer = process_event
+        self.qoder_cn.process_observer = process_event
         root = self.store.root / "runs" / run
         root.mkdir(parents=True, exist_ok=True)
         original = root / "original"
@@ -122,7 +146,24 @@ class Scheduler:
         baseline = await verify(base, cancelled=cancelled, profile=profile)
         before_worker = digest(manifest(candidate))
         adapter = self.adapters[task["provider"]]
-        result = await asyncio.wait_for(adapter.execute(task, candidate, attempt, cancelled), task["wall_seconds"])
+        milestone = None
+        if task.get("milestone_review"):
+            milestone = await self._milestone(run, task, attempt, fence, adapter, candidate, baseline, before_worker, cancelled)
+            if digest(manifest(candidate)) != before_worker:
+                raise OrchError("Diagnosis/review unexpectedly changed the read-only workspace")
+        worker_task = dict(task)
+        if attempt > 1:
+            previous_evidence = self.store.db.execute("SELECT evidence FROM attempts WHERE run_id=? AND task_id=? AND number=?", (run, tid, attempt-1)).fetchone()
+            previous_review = self.store.db.execute("SELECT body FROM reviews WHERE run_id=? AND task_id=? AND attempt=? ORDER BY rowid DESC LIMIT 1", (run, tid, attempt-1)).fetchone()
+            if previous_evidence and previous_evidence[0] and previous_review:
+                old_evidence = json.loads(previous_evidence[0])
+                old_review = json.loads(previous_review[0])
+                old_candidate = root/tid/str(attempt-1)/"candidate"
+                if digest(manifest(old_candidate)) != old_evidence["candidate_hash"] or old_review.get("candidate_hash") != old_evidence["candidate_hash"]:
+                    raise OrchError("Rework evidence or previous candidate drift")
+                worker_task["rework_context"] = {"previous_attempt": attempt-1, "previous_candidate_hash": old_evidence["candidate_hash"],
+                                               "review": old_review, "verification": old_evidence["verification"], "previous_diff": old_evidence["diff"]}
+        result = await asyncio.wait_for(adapter.execute(worker_task, candidate, attempt, cancelled), task["wall_seconds"])
         if digest(manifest(candidate)) != before_worker:
             raise OrchError("Read-only worker unexpectedly changed workspace")
         if cancelled():
@@ -134,6 +175,8 @@ class Scheduler:
         tree = manifest(candidate)
         evidence = {"task": task, "attempt": attempt, "provider": task["provider"], "brain": self.brain_name,
                     "worker_claim": result["summary"], "provider_metadata": getattr(adapter, "last_metadata", None),
+                    "rework_context": worker_task.get("rework_context"),
+                    "milestone": milestone,
                     "baseline": baseline, "baseline_hash": digest(manifest(base)), "candidate_hash": digest(tree),
                     "manifest": tree, "changed_paths": changed, "scope_ok": set(changed) <= set(task["allowed_paths"]),
                     "changes": change_details(base, candidate), "source_snapshot": self.store.submission(run).get("source_snapshot"),
@@ -145,13 +188,40 @@ class Scheduler:
             self.store.save_evidence(run, tid, attempt, evidence, {"decision": "pending", "candidate_hash": evidence["candidate_hash"]}, fence)
             return
         review = validate_review(await self.brain.review(evidence, candidate, cancelled=cancelled), evidence)
-        if self.brain_name == "codex":
-            evidence["reviewer_metadata"] = self.codex.last_metadata
+        if self.brain_name in ("codex", "qoder-cn"):
+            evidence["reviewer_metadata"] = self.brain_adapter.last_metadata
         if digest(manifest(candidate)) != evidence["candidate_hash"]:
             raise OrchError("Candidate changed during review")
         if cancelled():
             raise asyncio.CancelledError()
         self.store.complete_review(run, tid, attempt, fence, evidence, review, self.brain_name)
+
+    async def _milestone(self, run, task, attempt, fence, adapter, workspace, baseline, baseline_hash, cancelled):
+        if not hasattr(adapter, "diagnose") or not hasattr(self.brain, "review_milestone"):
+            raise ProviderBlocked("Selected worker/brain does not implement diagnosis milestones")
+        prior = [e for e in self.store.events(run) if e["task_id"] == task["id"] and e["type"] == "milestone_approved"]
+        if prior:
+            record = prior[-1]["payload"]
+            bundle = record["bundle"]
+            validate_milestone_review(record["review"], bundle)
+            if bundle["baseline_hash"] != baseline_hash or bundle["task"] != task:
+                raise OrchError("Approved milestone no longer matches task baseline")
+            self.store.attempt_event(run, task["id"], attempt, fence, "milestone_reused", {"milestone_hash": digest(bundle), "from_attempt": prior[-1]["attempt"]})
+            return record
+        diagnosis = validate_diagnosis(await adapter.diagnose(task, workspace, cancelled), task)
+        diagnosis_metadata = adapter.last_metadata
+        bundle = {"task": task, "baseline_hash": baseline_hash, "baseline_verification": baseline, "diagnosis": diagnosis}
+        self.store.attempt_event(run, task["id"], attempt, fence, "diagnosis_completed", {"bundle": bundle, "provider_metadata": adapter.last_metadata})
+        if diagnosis["needs_scope_change"] or not set(diagnosis["proposed_paths"]) <= set(task["allowed_paths"]):
+            raise ProviderBlocked("Diagnosis requires a new scope/approval; implementation not started")
+        review = validate_milestone_review(await self.brain.review_milestone(bundle, workspace, cancelled=cancelled), bundle)
+        record = {"bundle": bundle, "review": review, "worker_metadata": diagnosis_metadata,
+                  "reviewer_metadata": getattr(self.brain_adapter, "last_metadata", None)}
+        if review["decision"] != "continue":
+            self.store.attempt_event(run, task["id"], attempt, fence, "milestone_rejected", record)
+            raise ProviderBlocked("Diagnosis not approved; replan or manual review required")
+        self.store.attempt_event(run, task["id"], attempt, fence, "milestone_approved", record)
+        return record
 
     def _check_accepted_hash(self, run, task, path):
         row = self.store.db.execute("SELECT evidence FROM attempts WHERE run_id=? AND task_id=? AND number=?", (run, task["id"], task["attempt"])).fetchone()

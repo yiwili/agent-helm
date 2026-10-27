@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "note": "Documentation template; runtime enabling is explicit --enable-codex. No arbitrary command configuration is accepted.",
+  "note": "Documentation template; real providers require explicit --enable-codex or --enable-qoder-cn. No API fallback; no arbitrary shell commands.",
   "providers": {
     "mock": {"enabled": true},
     "manual": {"enabled": true},
     "codex": {"enabled": false, "version": "codex-cli 0.164.0-alpha.11.1", "auth": "chatgpt", "concurrency": 1},
-    "claude": {"enabled": false, "implemented": false},
-    "qoder": {"enabled": false, "implemented": false},
+    "claude": {"enabled": false, "implemented": false, "note": "Standalone authorized audit only; not a scheduler adapter"},
+    "qoder-cn": {"enabled": false, "implemented": true, "version": "1.1.80", "auth": "official-login", "concurrency": 1, "billing_verified": false},
     "trae": {"enabled": false, "implemented": false},
     "codebuddy": {"enabled": false, "implemented": false},
     "api": {"enabled": false, "budget": 0},
