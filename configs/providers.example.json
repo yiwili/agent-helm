@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "note": "Documentation template; real providers require explicit --enable-codex, --enable-qoder-cn or --enable-cursor. No API fallback; no arbitrary shell commands.",
+  "note": "Documentation template; real providers require explicit enable flags. Claude additionally requires an authorized external budget ledger. No automatic API fallback or arbitrary shell commands.",
   "providers": {
     "mock": {"enabled": true},
     "manual": {"enabled": true},
     "codex": {"enabled": false, "version": "codex-cli 0.164.0-alpha.11.1", "auth": "chatgpt", "concurrency": 1},
-    "claude": {"enabled": false, "implemented": false, "note": "Standalone authorized audit only; not a scheduler adapter"},
+    "claude": {"enabled": false, "implemented": true, "version": "2.1.311 (Claude Code)", "role": "worker", "auth": "existing-user-config", "budget_ledger_required": true, "billing_verified": false, "smoke_passed": false},
     "qoder-cn": {"enabled": false, "implemented": true, "version": "1.1.80", "auth": "official-login", "concurrency": 1, "billing_verified": false},
     "cursor": {"enabled": false, "implemented": true, "version": "2026.10.22-27dcf5f", "role": "worker", "auth": "dedicated-official-login", "concurrency": 1, "billing_verified": false, "smoke_passed": false},
     "trae": {"enabled": false, "implemented": false},

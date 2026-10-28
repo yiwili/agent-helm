@@ -12,6 +12,7 @@ from pathlib import Path
 from .adapters.codex_cli import CodexAdapter
 from .adapters.qoder_cn_cli import QoderCNAdapter
 from .adapters.cursor_cli import CursorAdapter, prepare_config
+from .adapters.claude_cli import ClaudeAdapter
 from .brain import fixture_plan
 from .backup import backup_bundle, restore_bundle, verify_backup
 from .integrator import integrate
@@ -55,12 +56,15 @@ def parser():
     probe.add_argument("--enable-cursor", action="store_true")
     probe.add_argument("--cursor-cli-dir", type=Path)
     probe.add_argument("--cursor-config-dir", type=Path)
+    probe.add_argument("--enable-claude", action="store_true")
+    probe.add_argument("--claude-bin")
+    probe.add_argument("--claude-budget-ledger", type=Path)
     probe.add_argument("--workspace", type=Path)
     plan = sub.add_parser("plan")
     plan.add_argument("--request", required=True)
     plan.add_argument("--output", required=True)
     plan.add_argument("--brain", choices=["interactive", "codex", "qoder-cn"], default="interactive")
-    plan.add_argument("--worker-provider", choices=["codex", "qoder-cn", "cursor", "manual", "mock"], default="codex")
+    plan.add_argument("--worker-provider", choices=["codex", "qoder-cn", "cursor", "claude", "manual", "mock"], default="codex")
     plan.add_argument("--enable-codex", action="store_true")
     plan.add_argument("--enable-qoder-cn", action="store_true")
     plan.add_argument("--qoder-cn-bin")
@@ -93,6 +97,9 @@ def parser():
     execute.add_argument("--enable-cursor", action="store_true")
     execute.add_argument("--cursor-cli-dir", type=Path)
     execute.add_argument("--cursor-config-dir", type=Path)
+    execute.add_argument("--enable-claude", action="store_true")
+    execute.add_argument("--claude-bin")
+    execute.add_argument("--claude-budget-ledger", type=Path)
     execute.add_argument("--brain", choices=["mock", "interactive", "codex", "qoder-cn"], default="mock")
     execute.add_argument("--manual-result", type=Path)
     execute.add_argument("--retry-blocked", action="store_true")
@@ -117,6 +124,14 @@ def parser():
     restore.add_argument("--backup", required=True)
     restore.add_argument("--output", required=True)
     sub.add_parser("recover")
+    budgets = sub.add_parser("budgets", help="Trusted local cost authorization; never expose to workers").add_subparsers(dest="budget_command", required=True)
+    budget_create = budgets.add_parser("create")
+    budget_create.add_argument("--ledger", type=Path, required=True)
+    budget_create.add_argument("--total-usd", required=True)
+    budget_create.add_argument("--per-call-usd", required=True)
+    budget_create.add_argument("--yes", action="store_true")
+    budget_status = budgets.add_parser("status")
+    budget_status.add_argument("--ledger", type=Path, required=True)
     demo = sub.add_parser("demo")
     demo.add_argument("--bad-first", action="store_true")
     demo.add_argument("--git", action="store_true", help="Use a newly created real Git repository as synthetic fixture")
@@ -127,6 +142,18 @@ def parser():
 
 async def dispatch(args):
     command = args.command
+    if command == "budgets":
+        from .budget import Budget, create_budget
+        if args.budget_command == "create":
+            if not args.yes:
+                if not sys.stdin.isatty() or input(f"Type AUTHORIZE for total USD {args.total_usd}, per-call USD {args.per_call_usd}: ") != "AUTHORIZE":
+                    raise OrchError("Budget requires explicit local authorization or --yes")
+            return create_budget(args.ledger, args.total_usd, args.per_call_usd)
+        budget = Budget(args.ledger)
+        try:
+            return budget.report()
+        finally:
+            budget.close()
     if command == "verify-backup":
         meta = verify_backup(args.backup)
         return {"verified": True, "manifest_hash": meta["manifest_hash"], "files": len(meta["files"])}
@@ -141,10 +168,12 @@ async def dispatch(args):
     if command == "providers":
         if args.provider_command == "prepare-cursor":
             return {"provider": "cursor", "config_dir": str(prepare_config(args.config_dir)), "authenticated": False, "model_calls": 0}
-        if args.provider not in ("codex", "qoder-cn", "cursor"):
+        if args.provider not in ("codex", "qoder-cn", "cursor", "claude"):
             return {"provider": args.provider, "binary": shutil.which(args.provider), "adapter": "unsupported", "billing_verified": False, "production_ready": False}
         if args.provider == "cursor":
             adapter = CursorAdapter(enabled=args.enable_cursor, package=args.cursor_cli_dir, config_dir=args.cursor_config_dir)
+        elif args.provider == "claude":
+            adapter = ClaudeAdapter(enabled=args.enable_claude, executable=args.claude_bin, budget_ledger=args.claude_budget_ledger)
         else:
             adapter = CodexAdapter(enabled=args.enable_codex) if args.provider == "codex" else QoderCNAdapter(enabled=args.enable_qoder_cn, executable=args.qoder_cn_bin)
         report = await adapter.probe(Path.cwd())
@@ -212,6 +241,8 @@ async def dispatch(args):
             scheduler = Scheduler(store, enable_codex=args.enable_codex, enable_qoder_cn=args.enable_qoder_cn,
                                   qoder_cn_bin=args.qoder_cn_bin, enable_cursor=args.enable_cursor,
                                   cursor_cli_dir=args.cursor_cli_dir, cursor_config_dir=args.cursor_config_dir,
+                                  enable_claude=args.enable_claude, claude_bin=args.claude_bin,
+                                  claude_budget_ledger=args.claude_budget_ledger,
                                   brain=args.brain, manual_result=args.manual_result)
             return await scheduler.execute(args.run_id)
         if command == "status":

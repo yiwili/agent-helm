@@ -8,7 +8,7 @@
 | P3 | Windows Codex 0.164.0-alpha.11.1、Qoder CN 1.1.80 的真实候选与独立验证；Cursor 2026.10.22-27dcf5f worker 离线接入；Codex worker/reviewer 本机取消与 Job 归零已验证 | Cursor 未真实 smoke；没有实际供应商权限/额度故障注入、沙箱越界 canary 读写验证、远端 session 恢复、账单核实；Qoder 专项取消 smoke 未做 |
 | P4 | CodexBrain 规划/新会话审查；交互主脑计划/审批；诊断先审查、候选哈希绑定、真实反馈返工、租约续期 | 无通用里程碑交互暂停/恢复；同供应商独立会话存在相关错误风险 |
 | P5 | Codex 主脑 + Qoder CN worker，以及 Qoder CN 主脑 + Codex worker 两个方向均在合成 Git 仓库完成规划、诊断审查、故障注入返工、最终审查与集成复测 | 计费未核实，不能称订阅自动路由或生产就绪；Cursor 真实闭环待独立登录 |
-| P6 | Claude CLI 经 CC Switch 自定义 API 的连通性通过；按次/总额预留；结构化审查被契约拒绝 | 未完成 Claude 审查接入；不是自动 API fallback；实际模型 GLM；GUI 与 Windows↔WSL runner 仍关闭，TRAE 跳过 |
+| P6 | Claude CLI 元数据/旧连通性通过；新增默认关闭的预算 worker、原生 structured_output 与事务预留，离线契约通过 | 新 worker 真实闭环待新增预算确认；旧文本审查失败仍保留；实际上游由用户配置选择，不能称 Claude 模型验证；GUI 与 Windows↔WSL runner 仍关闭，TRAE 跳过 |
 | P7 | SQLite backup API、维护锁、完整哈希清单与校验、同平台新目录恢复、恢复库 integrity_check 与已接受 run 复测；崩溃后禁止重放 | 无跨 schema 升级/降级迁移、远端 agent session 恢复、日志轮转/保留策略和全局监督服务 |
 
 真实运行数据保存在仓库外的私有 state root，不提交账号信息、原始日志和带本机绝对路径的证据包。
@@ -35,3 +35,5 @@
 阶段 3 接入 Qoder CN 调度器并新增 17 项测试，共 96 项；真实闭环和 Claude CLI 独立审查详见 [阶段 3 验收](phase3-acceptance.md)。Claude CLI 没有接入自动调度，TRAE 跳过，CodeBuddy、WorkBuddy 未接入。不对未核实账号权益或账单作推断。
 
 v0.5 新增 Cursor 下游 worker 与 17 项离线测试，总计 113 项（Windows 112 通过/1 权限跳过，WSL 113 通过）。另完成 Qoder CN 主脑 → Codex 下游 worker 的真实两轮闭环；Cursor 已下载并验证版本，但独立配置未登录，尚未真实 smoke。详见 [worker 接入记录](worker-acceptance.md)。
+
+v0.6 按用户澄清推进 Claude 与 Codex 下游角色：新增 16 项 Claude/预算离线测试，当前总计 129 项。Claude CLI 安装、版本和登录状态已确认，新 worker 没有在本轮执行收费推理，原生结构化输出兼容性待新增预算后实测。Cursor 保持关闭，不再推进登录。详见 [Claude worker 接入](claude-worker-acceptance.md)。

@@ -46,7 +46,8 @@
               "manual",
               "codex",
               "qoder-cn",
-              "cursor"
+              "cursor",
+              "claude"
             ]
           },
           "dependencies": {

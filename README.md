@@ -2,7 +2,7 @@
 
 订阅优先的本地、单用户 Agent 调度器，Python 3.11+，运行和测试均无第三方依赖。
 
-当前交付是 **v0.5 本地单用户版本**：Mock / Manual / Codex CLI / Qoder CN CLI / Cursor CLI worker，Git 基线、结构化规划与审查、诊断里程碑、返工反馈、SQLite 调度、审批、独立副本、可信验证器、候选哈希、取消恢复及校验备份。Codex 可以作为主脑或下游 worker；Cursor 已完成离线接入，真实验收需要独立官方登录。已在自建 Git 夹具上完成 Codex 主脑与 Qoder CN worker 的跨产品规划、诊断审查、两轮修复和集成复测，保留原有 staged / unstaged / untracked 状态。尚未达到指导书全部 P1–P7 的生产验收标准；具体差距见 [能力记录](docs/capabilities.md)。
+当前交付是 **v0.6 本地单用户版本**：Mock / Manual / Codex CLI / Qoder CN CLI，以及需单独预算的 Claude CLI 下游 worker。包含 Git 基线、结构化规划与审查、诊断里程碑、返工反馈、SQLite 调度、审批、独立副本、可信验证器、候选哈希、取消恢复及校验备份。Codex 可以作为主脑或下游 worker；Claude worker 已完成离线接入，真实推理需另行预算授权。Cursor 的可选代码保持默认关闭，当前不推进其验收。已在合成 Git 夹具上验证 Codex/Qoder 两个主脑与 worker 方向。尚未达到指导书全部 P1–P7 的生产验收标准；具体差距见 [能力记录](docs/capabilities.md)。
 
 实验只允许本项目和新生成的合成夹具，公司业务代码、业务仓库和备份不得用作实验输入。公开仓库不包含本地运行证据或凭据。
 
@@ -89,11 +89,29 @@ $env:PYTHONPATH = "$PWD\src"
 
 真实规划要求 `milestone_review=true`：worker 先诊断，主脑批准后才实现；越界诊断停止并要求新计划/审批。返工携带绑定前一候选哈希的测试、diff 和审查反馈；基线未变时复用已批准诊断。执行期间续租，租约丢失需核对。它仍不是通用交互暂停/恢复系统。
 
-Claude CLI 经现有 CC Switch 自定义 API 的独立小样本审查单独记录，不是调度器的自动 fallback；实际模型、预算与验收边界见 [阶段 3 验收](docs/phase3-acceptance.md)。TRAE 按用户要求跳过，未使用桌面自动化完成任务。
+此前 Claude CLI 经 CC Switch 自定义 API 的独立小样本审查记录见 [阶段 3 验收](docs/phase3-acceptance.md)；旧审查未通过结构化契约。新的 worker 实现改用原生 structured_output，状态见 [Claude worker 接入](docs/claude-worker-acceptance.md)。TRAE 按用户要求跳过。
 
-## Cursor 与 Codex 下游 worker
+## Claude 与 Codex 下游 worker
 
-`plan --worker-provider codex|cursor|qoder-cn` 显式选择执行产品，`--brain codex|qoder-cn` 选择主脑。Cursor 当前仅接入 worker 角色。不同产品不代表独立底层模型，模型和计费状态以各自证据为准。
+`plan --worker-provider codex|claude|qoder-cn` 显式选择执行产品，`--brain codex|qoder-cn` 选择主脑。Claude 当前仅接入 worker，不是自动 API fallback。Claude CLI 可以使用已有 CC Switch 配置，底层模型未必为 Anthropic Claude；实际 modelUsage 与 CLI 费用估算记录在私有证据中。
+
+真实 Claude 调用必须同时具备 `--enable-claude` 和用户显式授权的外部预算账本。原有 `plan.api_budget=0` 仍禁止自动 API 路由；显式选择的 Claude CLI 可能经自定义 API 收费，由独立账本约束。预算创建命令属于可信本地用户，不能作为模型工具开放。
+
+```powershell
+# 仅在取得本轮明确预算授权后执行；账本必须是新文件，位于仓库、源目录和工作副本之外。
+.\agent-orch.ps1 budgets create --ledger "$env:TEMP\helm-claude-budget-new.db" --total-usd 0.30 --per-call-usd 0.10
+# 显式消费 Codex 额度与已授权 Claude 预算；只生成新的合成 Git 样例。
+& $env:AGENT_ORCH_PYTHON scripts/verify_cross_provider.py --output "$env:TEMP\helm-claude-live-new" --brain codex --worker claude --claude-budget-ledger "$env:TEMP\helm-claude-budget-new.db"
+.\agent-orch.ps1 budgets status --ledger "$env:TEMP\helm-claude-budget-new.db"
+```
+
+CLI 自动发现原生 `claude` 或用户 `.local/bin/claude.exe`，也可传 `--claude-bin`。精确版本为 `2.1.311 (Claude Code)`。手动提交计划时 provider 选 `claude`，run 加 `--enable-claude --claude-budget-ledger ... --brain codex --enable-codex`。不开启或缺少账本会在领取 attempt 前阻断。
+
+一次调用指一次 CLI 推理进程，最多 3 个 agent turns，原生 JSON Schema 内部生成也计入限制。stdin 传任务，safe-mode 关闭定制，禁用业务工具、skills、MCP 和持久会话；仅加载 user 设置以保留现有认证/模型，不提取 token。只接受成功终态的原生 `structured_output`，缺失时不从 result 文本或 Markdown 提取候选。候选仍由独立固定测试与主脑审查验收。
+
+账本通过 SQLite 事务先预留完整单次上限，失败也不自动退回；中断等未知结果、CLI 估算超预留会暂停预算并要求核对。即使单次只报告少量费用，也不自动扩充调用次数。CLI `--max-budget-usd` 和本地预留都不能证明代理账单硬上限；账本不代表付款系统。
+
+## 可选 Cursor worker（当前不推进）
 
 Cursor 使用官方 CLI 包中的原生 `node.exe`（Linux 为 `node`）和 `index.js`，以 argv 直接启动，不通过 `.cmd`、PowerShell 或任意 shell 命令配置。版本必须为 `2026.10.22-27dcf5f`。先将 `AGENT_ORCH_CURSOR_DIR` 设置为官方包目录，`AGENT_ORCH_CURSOR_CONFIG` 设置为仓库和工作副本之外的全新私有目录：
 
@@ -130,7 +148,7 @@ try {
 
 ## 可靠性验证
 
-新增 Cursor worker 契约与执行角色测试后共 113 项离线测试；Windows 的 symlink 创建测试可能因权限跳过。故障回放使用明确标记的离线 fake CLI，不接触真实账号。真实跨产品脚本必须单独显式运行，不属于默认测试。
+新增 Claude worker 与预算契约测试后共 129 项离线测试；Windows 的 symlink 创建测试可能因权限跳过。故障回放使用明确标记的离线 fake CLI，不接触真实账号。真实跨产品脚本必须单独显式运行，不属于默认测试。
 
 备份、校验和恢复（示例输出目录均须不存在）：
 

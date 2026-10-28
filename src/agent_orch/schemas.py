@@ -16,7 +16,7 @@ REVIEW_SCHEMA = {
 TASK_SCHEMA = {"type": "object", "additionalProperties": False,
     "required": ["id", "goal", "provider", "dependencies", "allowed_paths", "acceptance", "verifier_profile", "wall_seconds", "milestone_review"],
     "properties": {"id": {"type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$"}, "goal": {"type": "string"},
-                   "provider": {"enum": ["mock", "manual", "codex", "qoder-cn", "cursor"]},
+                   "provider": {"enum": ["mock", "manual", "codex", "qoder-cn", "cursor", "claude"]},
                    "milestone_review": {"type": "boolean"},
                    "dependencies": {"type": "array", "items": {"type": "string"}},
                    "allowed_paths": {"type": "array", "minItems": 1, "items": {"type": "string"}},

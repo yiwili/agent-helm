@@ -62,7 +62,7 @@ def validate_plan(plan):
         if not isinstance(t["id"], str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", t["id"]) or t["id"] in ids:
             raise OrchError("Duplicate or invalid task ID")
         ids.add(t["id"])
-        if t["provider"] not in ("mock", "manual", "codex", "qoder-cn", "cursor"):
+        if t["provider"] not in ("mock", "manual", "codex", "qoder-cn", "cursor", "claude"):
             raise OrchError("Unknown or unimplemented provider")
         if not isinstance(t["goal"], str) or not t["goal"].strip():
             raise OrchError("Task goal required")

@@ -1,4 +1,4 @@
-"""Explicit live Codex/Qoder CN brain with Codex/Qoder CN/Cursor fixture workers.
+"""Explicit live Codex/Qoder CN brain with explicitly selected fixture workers.
 
 No existing repository input, API fallback, GUI, token extraction, or publication.
 Optional fault injection is clearly recorded and never attributed to the model.
@@ -49,8 +49,10 @@ async def main():
     p.add_argument("--qoder-cn-bin")
     p.add_argument("--cursor-cli-dir", type=Path)
     p.add_argument("--cursor-config-dir", type=Path)
+    p.add_argument("--claude-bin")
+    p.add_argument("--claude-budget-ledger", type=Path)
     p.add_argument("--brain", choices=["codex", "qoder-cn"], default="codex")
-    p.add_argument("--worker", choices=["codex", "qoder-cn", "cursor"], default="qoder-cn")
+    p.add_argument("--worker", choices=["codex", "qoder-cn", "cursor", "claude"], default="qoder-cn")
     p.add_argument("--inject-first-fault", action="store_true")
     args = p.parse_args()
     if args.brain == args.worker:
@@ -58,6 +60,10 @@ async def main():
     args.output = args.output.resolve()
     if args.output.is_relative_to(Path(__file__).resolve().parents[1]):
         raise OrchError("Live evidence and generated workspaces must be outside this repository")
+    if args.worker == "claude":
+        from agent_orch.budget import Budget
+        budget = Budget(args.claude_budget_ledger, args.output)
+        budget.close()
     args.output.mkdir(parents=True, exist_ok=False)
     source = make_git_fixture(args.output/"synthetic-git")
     (source/"README.txt").write_text("staged synthetic note\n", encoding="utf-8")
@@ -70,7 +76,8 @@ async def main():
         scheduler = Scheduler(store, enable_codex="codex" in (args.brain, args.worker),
                               enable_qoder_cn="qoder-cn" in (args.brain, args.worker), qoder_cn_bin=args.qoder_cn_bin,
                               enable_cursor=args.worker == "cursor", cursor_cli_dir=args.cursor_cli_dir,
-                              cursor_config_dir=args.cursor_config_dir, brain=args.brain)
+                              cursor_config_dir=args.cursor_config_dir, enable_claude=args.worker == "claude",
+                              claude_bin=args.claude_bin, claude_budget_ledger=args.claude_budget_ledger, brain=args.brain)
         planner = CodexBrain(scheduler.brain_adapter)
         plan = await planner.plan({"goal": "Fix total([]) to return 0 and preserve other totals", "source": (source/"stats.py").read_text(encoding="utf-8")}, source, worker_provider=args.worker)
         planning_metadata = copy.deepcopy(scheduler.brain_adapter.last_metadata)
