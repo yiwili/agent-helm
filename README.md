@@ -2,7 +2,7 @@
 
 订阅优先的本地、单用户 Agent 调度器，Python 3.11+，运行和测试均无第三方依赖。
 
-当前交付是 **v0.4 本地单用户版本**：Mock / Manual / Codex CLI / Qoder CN CLI，Git 基线、结构化规划与审查、诊断里程碑、返工反馈、SQLite 调度、审批、独立副本、可信验证器、候选哈希、取消恢复及校验备份。已在自建 Git 夹具上完成 Codex 主脑与 Qoder CN worker 的跨产品规划、诊断审查、两轮修复和集成复测，保留原有 staged / unstaged / untracked 状态。尚未达到指导书全部 P1–P7 的生产验收标准；具体差距见 [能力记录](docs/capabilities.md)。
+当前交付是 **v0.5 本地单用户版本**：Mock / Manual / Codex CLI / Qoder CN CLI / Cursor CLI worker，Git 基线、结构化规划与审查、诊断里程碑、返工反馈、SQLite 调度、审批、独立副本、可信验证器、候选哈希、取消恢复及校验备份。Codex 可以作为主脑或下游 worker；Cursor 已完成离线接入，真实验收需要独立官方登录。已在自建 Git 夹具上完成 Codex 主脑与 Qoder CN worker 的跨产品规划、诊断审查、两轮修复和集成复测，保留原有 staged / unstaged / untracked 状态。尚未达到指导书全部 P1–P7 的生产验收标准；具体差距见 [能力记录](docs/capabilities.md)。
 
 实验只允许本项目和新生成的合成夹具，公司业务代码、业务仓库和备份不得用作实验输入。公开仓库不包含本地运行证据或凭据。
 
@@ -85,11 +85,35 @@ $env:PYTHONPATH = "$PWD\src"
 & $env:AGENT_ORCH_PYTHON scripts/verify_cross_provider.py --output "$env:TEMP\helm-cross-provider-new" --qoder-cn-bin $env:AGENT_ORCH_QODER_CN --inject-first-fault
 ```
 
-`--output` 必须不存在，且位于源码仓库之外。此脚本包含可信测试程序的显式审批，仅用于合成样例。`--inject-first-fault` 会保存真实 worker 原响应，再由测试程序故意破坏首轮候选以验收返工；不能据此声称模型出错。省略该选项则不注入错误。可用 `--brain qoder-cn --worker codex` 交换角色，但本次真实验收只覆盖默认方向。
+`--output` 必须不存在，且位于源码仓库之外。此脚本包含可信测试程序的显式审批，仅用于合成样例。`--inject-first-fault` 会保存真实 worker 原响应，再由测试程序故意破坏首轮候选以验收返工；不能据此声称模型出错。省略该选项则不注入错误。用 `--brain qoder-cn --worker codex` 交换角色；最新验收见 [worker 接入记录](docs/worker-acceptance.md)。
 
 真实规划要求 `milestone_review=true`：worker 先诊断，主脑批准后才实现；越界诊断停止并要求新计划/审批。返工携带绑定前一候选哈希的测试、diff 和审查反馈；基线未变时复用已批准诊断。执行期间续租，租约丢失需核对。它仍不是通用交互暂停/恢复系统。
 
 Claude CLI 经现有 CC Switch 自定义 API 的独立小样本审查单独记录，不是调度器的自动 fallback；实际模型、预算与验收边界见 [阶段 3 验收](docs/phase3-acceptance.md)。TRAE 按用户要求跳过，未使用桌面自动化完成任务。
+
+## Cursor 与 Codex 下游 worker
+
+`plan --worker-provider codex|cursor|qoder-cn` 显式选择执行产品，`--brain codex|qoder-cn` 选择主脑。Cursor 当前仅接入 worker 角色。不同产品不代表独立底层模型，模型和计费状态以各自证据为准。
+
+Cursor 使用官方 CLI 包中的原生 `node.exe`（Linux 为 `node`）和 `index.js`，以 argv 直接启动，不通过 `.cmd`、PowerShell 或任意 shell 命令配置。版本必须为 `2026.10.22-27dcf5f`。先将 `AGENT_ORCH_CURSOR_DIR` 设置为官方包目录，`AGENT_ORCH_CURSOR_CONFIG` 设置为仓库和工作副本之外的全新私有目录：
+
+```powershell
+.\agent-orch.ps1 providers prepare-cursor --config-dir $env:AGENT_ORCH_CURSOR_CONFIG
+# 只为下面的官方登录命令设置独立配置目录；不会复制其他产品的 token。
+$previousCursorConfig = $env:CURSOR_CONFIG_DIR
+try {
+    $env:CURSOR_CONFIG_DIR = $env:AGENT_ORCH_CURSOR_CONFIG
+    & "$env:AGENT_ORCH_CURSOR_DIR\node.exe" "$env:AGENT_ORCH_CURSOR_DIR\index.js" login
+} finally {
+    $env:CURSOR_CONFIG_DIR = $previousCursorConfig
+}
+.\agent-orch.ps1 providers probe cursor --cursor-cli-dir $env:AGENT_ORCH_CURSOR_DIR --cursor-config-dir $env:AGENT_ORCH_CURSOR_CONFIG
+& $env:AGENT_ORCH_PYTHON scripts/verify_cross_provider.py --output "$env:TEMP\helm-cursor-new" --brain codex --worker cursor --cursor-cli-dir $env:AGENT_ORCH_CURSOR_DIR --cursor-config-dir $env:AGENT_ORCH_CURSOR_CONFIG
+```
+
+最后一条是显式真实调用，不属于默认测试。手动提交计划时使用 provider `cursor`，执行加 `--enable-cursor --cursor-cli-dir ... --cursor-config-dir ... --brain codex --enable-codex`。未启用时阻断且不领取 attempt。
+
+独立配置拒绝 Shell、Read、Write、WebFetch 与 MCP，启用 ask/sandbox；不能导入用户扩展、自定义端点或工作副本 `.cursor` 设置。配置变化立即阻断。stdin 传任务，要求 stream-json 中官方登录、完整成功终态、同一 session 和精确候选 JSON；遇到任何工具事件拒绝候选。`--trust` 仅免除合成工作副本的信任交互，不使用 `--force`、`--yolo` 或自动批准 MCP。以上控制与本地进程监督不是完整 OS 隔离，Cursor 的工具拒绝效果还需真实验收，不能仅凭 ask 模式称沙箱已验证。
 
 故障演示：`demo --failure bad`（三次失败后升级人工）、`demo --failure quota`、`demo --failure permission`、`demo --failure timeout`；失败/阻塞的 CLI 退出码为 2。`cancel RUN_ID` 可从第二个终端取消；运行中的进程确认停止前保持 cancel_requested。离线测试还覆盖进程子树、租约、重启、数据库事务回滚、错误 JSON、路径越界和基线漂移。
 
@@ -106,7 +130,7 @@ Claude CLI 经现有 CC Switch 自定义 API 的独立小样本审查单独记�
 
 ## 可靠性验证
 
-阶段 3 扩展至 96 项离线测试；Windows 的 symlink 创建测试可能因权限跳过。故障回放使用明确标记的离线 fake CLI，不接触真实账号。真实跨产品脚本必须单独显式运行，不属于默认测试。
+新增 Cursor worker 契约与执行角色测试后共 113 项离线测试；Windows 的 symlink 创建测试可能因权限跳过。故障回放使用明确标记的离线 fake CLI，不接触真实账号。真实跨产品脚本必须单独显式运行，不属于默认测试。
 
 备份、校验和恢复（示例输出目录均须不存在）：
 

@@ -11,6 +11,7 @@ from .adapters.codex_cli import CodexAdapter
 from .adapters.manual import ManualAdapter
 from .adapters.mock import MockAdapter
 from .adapters.qoder_cn_cli import QoderCNAdapter
+from .adapters.cursor_cli import CursorAdapter
 from .brain import CodexBrain, MockBrain
 from .models import OrchError, digest, validate_review, validate_diagnosis, validate_milestone_review
 from .verifier import verify
@@ -19,11 +20,12 @@ from .workspace import apply_files, copy_snapshot, diff, manifest, change_detail
 
 
 class Scheduler:
-    def __init__(self, store, *, enable_codex=False, enable_qoder_cn=False, qoder_cn_bin=None, brain="mock", manual_result=None):
+    def __init__(self, store, *, enable_codex=False, enable_qoder_cn=False, qoder_cn_bin=None, enable_cursor=False, cursor_cli_dir=None, cursor_config_dir=None, brain="mock", manual_result=None):
         self.store = store
         self.codex = CodexAdapter(enabled=enable_codex)
         self.qoder_cn = QoderCNAdapter(enabled=enable_qoder_cn, executable=qoder_cn_bin)
-        self.adapters = {"mock": MockAdapter(), "manual": ManualAdapter(manual_result), "codex": self.codex, "qoder-cn": self.qoder_cn}
+        self.cursor = CursorAdapter(enabled=enable_cursor, package=cursor_cli_dir, config_dir=cursor_config_dir)
+        self.adapters = {"mock": MockAdapter(), "manual": ManualAdapter(manual_result), "codex": self.codex, "qoder-cn": self.qoder_cn, "cursor": self.cursor}
         self.brain_name = brain
         self.brain_adapter = self.adapters.get(brain)
         self.brain = CodexBrain(self.brain_adapter) if brain in ("codex", "qoder-cn") else MockBrain()
@@ -77,7 +79,7 @@ class Scheduler:
             if self.brain_name == "mock" and task["provider"] != "mock":
                 self.store.transition(run, t["id"], "blocked", payload={"reason": "Real/manual workers require codex, qoder-cn or interactive review"})
                 continue
-            if task["provider"] in ("codex", "qoder-cn") and not self.adapters[task["provider"]].enabled:
+            if task["provider"] in ("codex", "qoder-cn", "cursor") and not self.adapters[task["provider"]].enabled:
                 self.store.transition(run, t["id"], "blocked", payload={"reason": task["provider"]+" disabled; no API fallback"})
                 continue
             if self.brain_name in ("codex", "qoder-cn") and not self.brain_adapter.enabled:
@@ -117,6 +119,7 @@ class Scheduler:
                 self.store.event(run, tid, attempt, kind, {**data, "fence": fence})
         self.codex.process_observer = process_event
         self.qoder_cn.process_observer = process_event
+        self.cursor.process_observer = process_event
         root = self.store.root / "runs" / run
         root.mkdir(parents=True, exist_ok=True)
         original = root / "original"

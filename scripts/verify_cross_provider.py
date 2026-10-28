@@ -1,4 +1,4 @@
-"""Explicit live Codex/Qoder CN pipeline on a newly generated synthetic Git repo.
+"""Explicit live Codex/Qoder CN brain with Codex/Qoder CN/Cursor fixture workers.
 
 No existing repository input, API fallback, GUI, token extraction, or publication.
 Optional fault injection is clearly recorded and never attributed to the model.
@@ -46,9 +46,11 @@ async def main():
         sys.stdout.reconfigure(encoding="utf-8")
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--output", type=Path, required=True)
-    p.add_argument("--qoder-cn-bin", required=True)
+    p.add_argument("--qoder-cn-bin")
+    p.add_argument("--cursor-cli-dir", type=Path)
+    p.add_argument("--cursor-config-dir", type=Path)
     p.add_argument("--brain", choices=["codex", "qoder-cn"], default="codex")
-    p.add_argument("--worker", choices=["codex", "qoder-cn"], default="qoder-cn")
+    p.add_argument("--worker", choices=["codex", "qoder-cn", "cursor"], default="qoder-cn")
     p.add_argument("--inject-first-fault", action="store_true")
     args = p.parse_args()
     if args.brain == args.worker:
@@ -65,7 +67,10 @@ async def main():
     before = source_snapshot(source)
     store = Store(args.output/"state")
     try:
-        scheduler = Scheduler(store, enable_codex=True, enable_qoder_cn=True, qoder_cn_bin=args.qoder_cn_bin, brain=args.brain)
+        scheduler = Scheduler(store, enable_codex="codex" in (args.brain, args.worker),
+                              enable_qoder_cn="qoder-cn" in (args.brain, args.worker), qoder_cn_bin=args.qoder_cn_bin,
+                              enable_cursor=args.worker == "cursor", cursor_cli_dir=args.cursor_cli_dir,
+                              cursor_config_dir=args.cursor_config_dir, brain=args.brain)
         planner = CodexBrain(scheduler.brain_adapter)
         plan = await planner.plan({"goal": "Fix total([]) to return 0 and preserve other totals", "source": (source/"stats.py").read_text(encoding="utf-8")}, source, worker_provider=args.worker)
         planning_metadata = copy.deepcopy(scheduler.brain_adapter.last_metadata)

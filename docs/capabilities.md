@@ -1,13 +1,13 @@
-# 能力与证据（2026-10-27，Asia/Shanghai）
+# 能力与证据（2026-10-28，Asia/Shanghai）
 
 | 阶段 | 已实现/验证 | 尚未满足的退出条件 |
 |---|---|---|
-| P0 | Codex、Qoder CN、Claude CLI 路径/版本/help/认证探测；Windows 与 WSL Python/Git；官方文档复核 | 桌面产品安装不等于 CLI 可用；TRAE 按用户要求跳过 |
+| P0 | Codex、Qoder CN、Claude、Cursor CLI 路径/版本/help/认证状态探测；Windows 与 WSL Python/Git；官方文档复核 | Cursor 独立配置未登录；桌面产品安装不等于 CLI 可用；TRAE 按用户要求跳过 |
 | P1 | Python 标准库 CLI、严格契约、SQLite 表、DAG、Mock/Manual、事件、审批、幂等、状态转换、有限返工 | 无常驻调度服务、全局并发与供应商动态熔断服务；当前每 run 串行 |
 | P2 | 独立快照、Git HEAD/index/status 基线、原目录保护、可信验收登记与哈希、文本/二进制/重命名/模式差异、审查门、集成重放 | 无 OS 级完整隔离；符号链接存在 TOCTOU 风险；仅以可信合成夹具验证，不保证任意业务代码兼容 |
-| P3 | Windows Codex 0.164.0-alpha.11.1、Qoder CN 1.1.80；真实只读 JSON 候选、独立验证；Codex worker/reviewer 本机取消与 Job 归零已验证 | 没有实际供应商权限/额度故障注入、沙箱越界 canary 读写验证、远端 session 恢复、账单核实；Qoder 专项取消 smoke 未做 |
+| P3 | Windows Codex 0.164.0-alpha.11.1、Qoder CN 1.1.80 的真实候选与独立验证；Cursor 2026.10.22-27dcf5f worker 离线接入；Codex worker/reviewer 本机取消与 Job 归零已验证 | Cursor 未真实 smoke；没有实际供应商权限/额度故障注入、沙箱越界 canary 读写验证、远端 session 恢复、账单核实；Qoder 专项取消 smoke 未做 |
 | P4 | CodexBrain 规划/新会话审查；交互主脑计划/审批；诊断先审查、候选哈希绑定、真实反馈返工、租约续期 | 无通用里程碑交互暂停/恢复；同供应商独立会话存在相关错误风险 |
-| P5 | Codex 主脑 + Qoder CN worker 在新建合成 Git 仓库完成规划、诊断审查、故障注入返工、最终审查与集成复测 | 计费未核实，不能称订阅自动路由或生产就绪；未真实验收交换角色方向 |
+| P5 | Codex 主脑 + Qoder CN worker，以及 Qoder CN 主脑 + Codex worker 两个方向均在合成 Git 仓库完成规划、诊断审查、故障注入返工、最终审查与集成复测 | 计费未核实，不能称订阅自动路由或生产就绪；Cursor 真实闭环待独立登录 |
 | P6 | Claude CLI 经 CC Switch 自定义 API 的连通性通过；按次/总额预留；结构化审查被契约拒绝 | 未完成 Claude 审查接入；不是自动 API fallback；实际模型 GLM；GUI 与 Windows↔WSL runner 仍关闭，TRAE 跳过 |
 | P7 | SQLite backup API、维护锁、完整哈希清单与校验、同平台新目录恢复、恢复库 integrity_check 与已接受 run 复测；崩溃后禁止重放 | 无跨 schema 升级/降级迁移、远端 agent session 恢复、日志轮转/保留策略和全局监督服务 |
 
@@ -33,3 +33,5 @@
 - [Codex 认证](https://learn.chatgpt.com/docs/auth)：ChatGPT 登录与 API key 认证不同。登录类型不能证明已核实账单或剩余额度。
 
 阶段 3 接入 Qoder CN 调度器并新增 17 项测试，共 96 项；真实闭环和 Claude CLI 独立审查详见 [阶段 3 验收](phase3-acceptance.md)。Claude CLI 没有接入自动调度，TRAE 跳过，CodeBuddy、WorkBuddy 未接入。不对未核实账号权益或账单作推断。
+
+v0.5 新增 Cursor 下游 worker 与 17 项离线测试，总计 113 项（Windows 112 通过/1 权限跳过，WSL 113 通过）。另完成 Qoder CN 主脑 → Codex 下游 worker 的真实两轮闭环；Cursor 已下载并验证版本，但独立配置未登录，尚未真实 smoke。详见 [worker 接入记录](worker-acceptance.md)。

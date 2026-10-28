@@ -18,13 +18,17 @@ class ProcessTreeUnconfirmed(OrchError):
     """The local supervisor could not prove all supervised processes stopped."""
 
 
-def safe_env(auth=False):
+def safe_env(auth=False, overrides=None):
     keep = {"PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
             "COMMONPROGRAMFILES", "COMMONPROGRAMFILES(X86)", "HOMEDRIVE", "HOMEPATH", "WINDIR", "TEMP", "TMP", "COMSPEC", "LANG", "LC_ALL", "USERPROFILE", "HOME", "LOCALAPPDATA", "APPDATA"}
     env = {k: v for k, v in os.environ.items() if k.upper() in keep}
     env.update({"PYTHONDONTWRITEBYTECODE": "1", "PYTHONIOENCODING": "utf-8"})
     if auth and "CODEX_HOME" in os.environ:
         env["CODEX_HOME"] = os.environ["CODEX_HOME"]
+    for key, value in (overrides or {}).items():
+        if not auth or key != "CURSOR_CONFIG_DIR" or not isinstance(value, str) or not Path(value).is_absolute():
+            raise OrchError("Only an explicit absolute Cursor config directory may override provider environment")
+        env[key] = value
     return env
 
 
@@ -95,14 +99,14 @@ class ProcessResult:
     stopped: bool = True
 
 
-async def run_process(argv, cwd, *, stdin="", timeout=60, cancelled=lambda: False, auth=False, on_start=None, on_stop=None, output_limit=2_000_000):
+async def run_process(argv, cwd, *, stdin="", timeout=60, cancelled=lambda: False, auth=False, on_start=None, on_stop=None, output_limit=2_000_000, env_overrides=None):
     if not argv or any(not isinstance(x, str) for x in argv) or argv[0].lower().endswith((".cmd", ".bat")):
         raise OrchError("Executable argv required; shell shims rejected")
     if cancelled():
         raise asyncio.CancelledError("Cancelled before process launch")
     opts = {"start_new_session": True} if os.name != "nt" else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
     launch = argv if os.name != "nt" else [sys.executable, "-I", "-B", str(Path(__file__).with_name("process_host.py")), *argv]
-    proc = await asyncio.create_subprocess_exec(*launch, cwd=cwd, env=safe_env(auth), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, **opts)
+    proc = await asyncio.create_subprocess_exec(*launch, cwd=cwd, env=safe_env(auth, env_overrides), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, **opts)
     job = None
     async def read(stream):
         output = bytearray()

@@ -45,7 +45,8 @@
               "mock",
               "manual",
               "codex",
-              "qoder-cn"
+              "qoder-cn",
+              "cursor"
             ]
           },
           "dependencies": {
