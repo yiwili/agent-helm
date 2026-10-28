@@ -16,6 +16,7 @@ from .adapters.claude_cli import ClaudeAdapter
 from .brain import CodexBrain, MockBrain
 from .models import OrchError, digest, validate_review, validate_diagnosis, validate_milestone_review
 from .verifier import verify
+from .verifier_context import verifier_context
 from .supervisor import ProcessTreeUnconfirmed
 from .workspace import apply_files, copy_snapshot, diff, manifest, change_details
 
@@ -160,12 +161,14 @@ class Scheduler:
         baseline = await verify(base, cancelled=cancelled, profile=profile)
         before_worker = digest(manifest(candidate))
         adapter = self.adapters[task["provider"]]
+        contract = verifier_context(task["verifier_profile"])
         milestone = None
         if task.get("milestone_review"):
-            milestone = await self._milestone(run, task, attempt, fence, adapter, candidate, baseline, before_worker, cancelled)
+            milestone = await self._milestone(run, task, attempt, fence, adapter, candidate, baseline, before_worker, cancelled, contract)
             if digest(manifest(candidate)) != before_worker:
                 raise OrchError("Diagnosis/review unexpectedly changed the read-only workspace")
         worker_task = dict(task)
+        worker_task["verifier_contract"] = contract
         if attempt > 1:
             previous_evidence = self.store.db.execute("SELECT evidence FROM attempts WHERE run_id=? AND task_id=? AND number=?", (run, tid, attempt-1)).fetchone()
             previous_review = self.store.db.execute("SELECT body FROM reviews WHERE run_id=? AND task_id=? AND attempt=? ORDER BY rowid DESC LIMIT 1", (run, tid, attempt-1)).fetchone()
@@ -188,6 +191,7 @@ class Scheduler:
         changed, patch = diff(base, candidate)
         tree = manifest(candidate)
         evidence = {"task": task, "attempt": attempt, "provider": task["provider"], "brain": self.brain_name,
+                    "verifier_contract": contract,
                     "worker_claim": result["summary"], "provider_metadata": getattr(adapter, "last_metadata", None),
                     "rework_context": worker_task.get("rework_context"),
                     "milestone": milestone,
@@ -210,7 +214,7 @@ class Scheduler:
             raise asyncio.CancelledError()
         self.store.complete_review(run, tid, attempt, fence, evidence, review, self.brain_name)
 
-    async def _milestone(self, run, task, attempt, fence, adapter, workspace, baseline, baseline_hash, cancelled):
+    async def _milestone(self, run, task, attempt, fence, adapter, workspace, baseline, baseline_hash, cancelled, contract):
         if not hasattr(adapter, "diagnose") or not hasattr(self.brain, "review_milestone"):
             raise ProviderBlocked("Selected worker/brain does not implement diagnosis milestones")
         prior = [e for e in self.store.events(run) if e["task_id"] == task["id"] and e["type"] == "milestone_approved"]
@@ -218,13 +222,14 @@ class Scheduler:
             record = prior[-1]["payload"]
             bundle = record["bundle"]
             validate_milestone_review(record["review"], bundle)
-            if bundle["baseline_hash"] != baseline_hash or bundle["task"] != task:
-                raise OrchError("Approved milestone no longer matches task baseline")
+            if bundle["baseline_hash"] != baseline_hash or bundle["task"] != task or bundle.get("verifier_contract") != contract:
+                raise OrchError("Approved milestone no longer matches task baseline or verifier context")
             self.store.attempt_event(run, task["id"], attempt, fence, "milestone_reused", {"milestone_hash": digest(bundle), "from_attempt": prior[-1]["attempt"]})
             return record
-        diagnosis = validate_diagnosis(await adapter.diagnose(task, workspace, cancelled), task)
+        diagnosis = validate_diagnosis(await adapter.diagnose({**task, "verifier_contract": contract}, workspace, cancelled), task)
         diagnosis_metadata = adapter.last_metadata
-        bundle = {"task": task, "baseline_hash": baseline_hash, "baseline_verification": baseline, "diagnosis": diagnosis}
+        bundle = {"task": task, "baseline_hash": baseline_hash, "baseline_verification": baseline, "diagnosis": diagnosis,
+                  "verifier_contract": contract}
         self.store.attempt_event(run, task["id"], attempt, fence, "diagnosis_completed", {"bundle": bundle, "provider_metadata": adapter.last_metadata})
         if diagnosis["needs_scope_change"] or not set(diagnosis["proposed_paths"]) <= set(task["allowed_paths"]):
             raise ProviderBlocked("Diagnosis requires a new scope/approval; implementation not started")

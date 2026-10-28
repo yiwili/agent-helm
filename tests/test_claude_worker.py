@@ -26,12 +26,14 @@ def terminal():
 
 class ClaudeProtocol(unittest.TestCase):
     def test_uses_native_field_and_keeps_actual_model_identity(self):
-        event = terminal()
-        event["result"] = "```json\nwrong text field\n```"
-        value, meta = parse_terminal(json.dumps(event), 0)
-        self.assertEqual(value, event["structured_output"])
-        self.assertEqual(meta["models"], ["offline-glm"])
-        self.assertFalse(meta["billing_verified"])
+        for stop_reason in ("end_turn", "tool_use"):
+            event = terminal()
+            event["result"] = "```json\nwrong text field\n```"
+            event["stop_reason"] = stop_reason
+            value, meta = parse_terminal(json.dumps(event), 0)
+            self.assertEqual(value, event["structured_output"])
+            self.assertEqual(meta["models"], ["offline-glm"])
+            self.assertFalse(meta["billing_verified"])
 
     def test_no_result_or_fence_extraction_fallback(self):
         for value in (None, [], '{"summary":"fake","files":[]}'):
