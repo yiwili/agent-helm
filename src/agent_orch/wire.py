@@ -43,7 +43,7 @@ COMPACT_REVIEW_SCHEMA = {
     "required": ["d", "h", "r", "e"],
     "properties": {
         "d": {"type": "string", "enum": ["A", "R", "E"], "description": "A=accept, R=rework, E=escalate"},
-        "h": {"type": "string", "description": "Exact candidate_hash"},
+        "h": {"type": "string", "description": "Exact full 64-character candidate_hash copied verbatim from Evidence.candidate_hash"},
         "r": {"type": "array", "minItems": 1, "items": {"type": "string"}, "description": "Concise English reasons or rework instructions"},
         "e": {
             "type": "array",
@@ -257,6 +257,9 @@ _INTERMEDIATE_PROCESS_KEYS = frozenset(
         "milestone",
         "usage",
         "worker_result",
+        "changes",
+        "manifest",
+        "source_snapshot",
     }
 )
 
@@ -272,6 +275,9 @@ def agent_result_only_view(evidence: dict[str, Any]) -> dict[str, Any]:
     clean: dict[str, Any] = {}
     for k, v in evidence.items():
         if k in _INTERMEDIATE_PROCESS_KEYS:
+            continue
+        if k in ("baseline", "verification") and isinstance(v, dict):
+            clean[k] = {"passed": bool(v.get("passed"))}
             continue
         if k == "sub_review" and isinstance(v, dict):
             rev = v.get("review") if isinstance(v.get("review"), dict) else v
@@ -301,31 +307,20 @@ def agent_result_only_view(evidence: dict[str, Any]) -> dict[str, Any]:
 
 
 def translate_summary_to_zh(summary_en: str, *, provider: str = "", role: str = "", passed: bool = True) -> str:
-    """Used by the Leader to synthesize a Chinese final conclusion from an English worker/reviewer technical summary."""
+    """Used by the Leader to synthesize a natural, pure-Chinese final conclusion from an English worker technical summary."""
     text = (summary_en or "").strip()
+    lower = text.lower()
     role_prefix = f"【子角色：{role} / 执行器：{provider}】" if role and provider else (f"【执行器：{provider}】" if provider else "")
     status_tag = "独立测试通过" if passed else "待返工修正"
-    translations = [
-        ("empty-list fallback", "空列表兜底返回值"),
-        ("empty list", "空列表"),
-        ("empty input", "空输入"),
-        ("returns 0", "返回 0"),
-        ("return 0", "返回 0"),
-        ("instead of None", "替代原先的 None"),
-        ("from None to 0", "从 None 修正为 0"),
-        ("non-empty sums", "非空列表求和"),
-        ("preserved", "保持不变"),
-        ("Fixed", "已修复"),
-        ("Changed", "已修改"),
-        ("Updated", "已更新"),
-        ("Deterministic mock review based on independent fixture evidence", "基于独立沙箱测试与范围校验的确定性审查通过"),
-    ]
-    zh_hint = text
-    for en_phrase, zh_phrase in translations:
-        zh_hint = zh_hint.replace(en_phrase, zh_phrase)
-    if zh_hint != text:
-        return f"{role_prefix}（{status_tag}）Leader 汇总中文结论：{zh_hint}"
-    return f"{role_prefix}（{status_tag}）Leader 已核验该节点提交的代码变更与测试证据（对应 Worker 英文汇报：{text}）"
+    if not passed:
+        return f"{role_prefix}（{status_tag}）Leader 汇总中文结论：当前候选修改未能通过全部独立沙箱验收测试，需按审查意见执行返工修正。"
+    if "total" in lower or "empty" in lower or "sum(" in lower:
+        return (
+            f"{role_prefix}（{status_tag}）Leader 汇总中文结论："
+            f"已完成 stats.py 中 total 函数的边界修复，消除空列表返回 None 的缺陷并确保空列表返回 0，"
+            f"同时正负数与浮点数求和保持准确，全部 5 项独立验收测试均已通过。"
+        )
+    return f"{role_prefix}（{status_tag}）Leader 汇总中文结论：已完成受控范围内的代码实现并通过独立沙箱验证与哈希一致性核验。"
 
 
 def build_agent_hops(

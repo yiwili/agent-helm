@@ -228,7 +228,21 @@ class Service:
                 evidence.append(item)
             reviews = [json.loads(r[0]) for r in self.store.db.execute("SELECT body FROM reviews WHERE run_id=? AND task_id=? ORDER BY rowid", (run, arguments["task_id"]))]
             reviews = [{"decision": r["decision"], "candidate_hash": r["candidate_hash"], "reasons": [redact(text) for text in r["reasons"][:10]]} for r in reviews if r.get("decision") != "pending"]
-            return {"run_id": run, "task_id": arguments["task_id"], "attempts": evidence, "reviews": reviews, "provider_content_is_untrusted": True}
+            from .wire import build_chinese_orchestration_report
+            plan_obj = json.loads(owned["plan"])
+            orch_obj = plan_obj.get("orchestration") if isinstance(plan_obj.get("orchestration"), dict) else {}
+            task_specs = [t for t in plan_obj.get("tasks", []) if t.get("id") == arguments["task_id"]] or plan_obj.get("tasks", [])
+            chinese_report = build_chinese_orchestration_report(
+                mode=orch_obj.get("mode", "direct"),
+                leader=orch_obj.get("leader", self.runtime.get("brain", "mock")),
+                splittable=bool(orch_obj.get("splittable", False)),
+                decomposition_reason=orch_obj.get("decomposition_reason", "Single-task MCP orchestration"),
+                tasks=task_specs,
+                attempts_by_task={arguments["task_id"]: evidence},
+                reviews_by_task={arguments["task_id"]: reviews},
+                final_state=self.store.run(run)["state"],
+            )
+            return {"run_id": run, "task_id": arguments["task_id"], "attempts": evidence, "reviews": reviews, "chinese_report": chinese_report, "provider_content_is_untrusted": True}
         if name == "helm_integrate":
             self._workspace(owned["workspace"])
             if owned["integration"]:

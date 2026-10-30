@@ -74,6 +74,10 @@ class Protocol:
 
 
 async def serve(root, **runtime):
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")
     service = Service(root, **runtime)
     protocol = Protocol(service)
     loop = asyncio.get_running_loop()
