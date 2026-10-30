@@ -380,3 +380,105 @@ async def serve_desktop(root):
     finally:
         await controller.service.shutdown()
     return 0
+
+
+async def serve_desktop_http(root, web_dir, host="127.0.0.1", port=1420, open_browser=False):
+    import mimetypes
+    import webbrowser
+    from .mcp_server import MAX_MESSAGE
+
+    controller = Desktop(root)
+    web_root = Path(web_dir).resolve()
+    lock = asyncio.Lock()
+
+    async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        try:
+            header_bytes = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=15)
+            header_text = header_bytes.decode("iso-8859-1")
+            lines = header_text.split("\r\n")
+            req_line = lines[0].split(" ")
+            if len(req_line) < 2:
+                return
+            method, raw_path = req_line[0], req_line[1].split("?", 1)[0]
+            headers = {}
+            for h in lines[1:]:
+                if ":" in h:
+                    k, v = h.split(":", 1)
+                    headers[k.strip().lower()] = v.strip()
+            content_len = int(headers.get("content-length", "0"))
+            if content_len > MAX_MESSAGE:
+                writer.write(b"HTTP/1.1 413 Payload Too Large\r\nConnection: close\r\n\r\n")
+                await writer.drain()
+                return
+            body_bytes = await asyncio.wait_for(reader.readexactly(content_len), timeout=15) if content_len > 0 else b""
+
+            if method == "POST" and raw_path == "/api/desktop":
+                try:
+                    msg = json.loads(body_bytes.decode("utf-8"), object_pairs_hook=unique_object)
+                    if not isinstance(msg, dict):
+                        raise OrchError("Desktop request must be an object")
+                    async with lock:
+                        val = await controller.call(msg.get("action"), msg.get("payload", {}))
+                    resp_data = json.dumps({"result": val}, ensure_ascii=False).encode("utf-8")
+                    status_line = "HTTP/1.1 200 OK"
+                except Exception as exc:
+                    resp_data = json.dumps({"error": redact(str(exc))}, ensure_ascii=False).encode("utf-8")
+                    status_line = "HTTP/1.1 400 Bad Request"
+                resp_headers = (
+                    f"{status_line}\r\n"
+                    f"Content-Type: application/json; charset=utf-8\r\n"
+                    f"Content-Length: {len(resp_data)}\r\n"
+                    f"Cache-Control: no-store\r\n"
+                    f"Connection: close\r\n\r\n"
+                ).encode("ascii")
+                writer.write(resp_headers + resp_data)
+                await writer.drain()
+                return
+
+            if method == "GET":
+                rel = raw_path.lstrip("/") or "index.html"
+                candidate = (web_root / rel).resolve()
+                if not candidate.is_relative_to(web_root) or not candidate.is_file():
+                    candidate = web_root / "index.html"
+                if candidate.is_file():
+                    data = candidate.read_bytes()
+                    ctype, _ = mimetypes.guess_type(str(candidate))
+                    ctype = ctype or "application/octet-stream"
+                    if ctype.startswith(("text/", "application/javascript", "application/json")):
+                        ctype += "; charset=utf-8"
+                    resp_headers = (
+                        f"HTTP/1.1 200 OK\r\n"
+                        f"Content-Type: {ctype}\r\n"
+                        f"Content-Length: {len(data)}\r\n"
+                        f"Cache-Control: no-cache\r\n"
+                        f"Connection: close\r\n\r\n"
+                    ).encode("ascii")
+                    writer.write(resp_headers + data)
+                    await writer.drain()
+                    return
+
+            writer.write(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n")
+            await writer.drain()
+        except Exception:
+            pass
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+
+    server = await asyncio.start_server(handle_client, host, port)
+    url = f"http://{host}:{port}"
+    print(f"Agent Helm Studio running at: {url}", flush=True)
+    if open_browser:
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+    try:
+        async with server:
+            await server.serve_forever()
+    finally:
+        await controller.service.shutdown()
+    return 0

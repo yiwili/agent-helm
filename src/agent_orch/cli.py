@@ -154,7 +154,12 @@ def parser():
     demo.add_argument("--real-codex", action="store_true", help="Explicitly run two ChatGPT-login CLI calls on generated synthetic data; never API fallback")
     demo.add_argument("--failure", choices=["bad", "timeout", "quota", "permission"])
     mcp = sub.add_parser("mcp", help="Local stdio MCP server; managed synthetic fixtures only; human approvals stay outside MCP")
-    sub.add_parser("desktop", help="Private Tauri desktop transport; not an MCP endpoint")
+    desk = sub.add_parser("desktop", help="Private Tauri desktop transport or local Studio UI server; not an MCP endpoint")
+    desk.add_argument("--http", action="store_true", help="Serve local Studio UI and desktop API over 127.0.0.1")
+    desk.add_argument("--web-dir", type=Path, help="Compiled frontend web assets directory")
+    desk.add_argument("--host", default="127.0.0.1")
+    desk.add_argument("--port", type=int, default=1420)
+    desk.add_argument("--open", action="store_true", help="Open browser automatically")
     mcp.add_argument("--brain", choices=["mock", "interactive", "codex", "qoder-cn"], default="mock")
     for provider in ("codex", "qoder-cn", "claude", "cursor", "deepseek", "antigravity"):
         mcp.add_argument("--enable-"+provider, action="store_true")
@@ -388,8 +393,12 @@ def main(argv=None):
             return frozen_fixture_check(arguments[1])
         args = parser().parse_args(arguments)
         if args.command == "desktop":
-            from .desktop import serve_desktop
+            from .desktop import serve_desktop, serve_desktop_http
             try:
+                if getattr(args, "http", False):
+                    if not args.web_dir or not args.web_dir.is_dir():
+                        raise OrchError("--http requires --web-dir pointing to built frontend assets")
+                    return asyncio.run(serve_desktop_http(args.state_root, args.web_dir, host=args.host, port=args.port, open_browser=args.open))
                 return asyncio.run(serve_desktop(args.state_root))
             except (Exception, asyncio.CancelledError, KeyboardInterrupt) as error:
                 print("Desktop core stopped: "+str(error)[:500], file=sys.stderr)
