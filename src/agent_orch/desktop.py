@@ -468,12 +468,25 @@ async def serve_desktop_http(root, web_dir, host="127.0.0.1", port=1420, open_br
             except Exception:
                 pass
 
-    server = await asyncio.start_server(handle_client, host, port)
-    url = f"http://{host}:{port}"
+    server = None
+    chosen_port = port
+    for candidate_port in range(port, port + 20):
+        try:
+            server = await asyncio.start_server(handle_client, host, candidate_port)
+            chosen_port = candidate_port
+            break
+        except OSError:
+            continue
+    if server is None:
+        raise OrchError(f"Could not bind local Studio server on {host}:{port}..{port+19}")
+    url = f"http://{host}:{chosen_port}"
     print(f"Agent Helm Studio running at: {url}", flush=True)
     if open_browser:
         try:
-            webbrowser.open(url)
+            if os.name == "nt":
+                os.startfile(url)
+            else:
+                webbrowser.open(url)
         except Exception:
             pass
     try:
