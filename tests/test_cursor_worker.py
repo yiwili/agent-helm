@@ -145,7 +145,7 @@ class CursorWorker(unittest.TestCase):
         adapter = CursorAdapter(enabled=True, package=self.package, config_dir=self.config, runner=runner)
         asyncio.run(adapter.call("PROMPT_CANARY", {}, self.workspace))
         argv, kwargs = calls[-1]
-        self.assertEqual(argv[1], str(self.package/"index.js"))
+        self.assertEqual(argv[1], str((self.package/"index.js").resolve()))
         self.assertEqual(argv[argv.index("--mode")+1], "ask")
         self.assertEqual(argv[argv.index("--sandbox")+1], "enabled")
         self.assertNotIn("PROMPT_CANARY", " ".join(argv))
