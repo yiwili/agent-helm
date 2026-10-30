@@ -33,6 +33,9 @@ def tools():
     plan_schema = json.loads(json.dumps(PLAN_SCHEMA))
     plan_schema["properties"]["tasks"]["maxItems"] = 10
     plan_schema["properties"]["tasks"]["items"]["properties"]["mock_behavior"] = {"enum": ["good", "bad-first", "bad", "timeout", "quota", "permission"]}
+    plan_schema["properties"]["tasks"]["items"]["properties"]["role"] = {"type": "string", "minLength": 1, "maxLength": 64}
+    plan_schema["properties"]["tasks"]["items"]["properties"]["sub_reviewer"] = {"enum": ["mock", "manual", "codex", "qoder-cn", "cursor", "claude", "deepseek", "antigravity"]}
+    plan_schema["properties"]["orchestration"] = {"type": "object"}
     definitions = [
         ("helm_capabilities", "Discover host-enabled workers, fixture scope and the human approval workflow.", object_schema(), True),
         ("helm_fixture_create", "Create a new non-sensitive stats fixture. No existing repository or arbitrary path input.", object_schema({"git": {"type": "boolean"}}), False),

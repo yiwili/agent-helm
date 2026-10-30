@@ -93,9 +93,29 @@
           },
           "milestone_review": {
             "type": "boolean"
+          },
+          "role": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "sub_reviewer": {
+            "enum": [
+              "mock",
+              "manual",
+              "codex",
+              "qoder-cn",
+              "cursor",
+              "claude",
+              "deepseek",
+              "antigravity"
+            ]
           }
         }
       }
+    },
+    "orchestration": {
+      "type": "object"
     },
     "max_rework_rounds": {
       "type": "integer",

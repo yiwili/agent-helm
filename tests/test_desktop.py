@@ -179,3 +179,54 @@ class DesktopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(unified["thinking"]["context_window"], "1m")
         self.assertEqual(len(unified["operations"]), 1)
         self.assertEqual(unified["operations"][0]["action"], "write")
+
+    async def test_leader_worker_modes_ahcp_wire_and_chinese_report(self):
+        from agent_orch.wire import expand_wire_result, expand_wire_review, parse_ahcp_text
+        # 1. Verify AHCP-1 compact wire expansion
+        compact_res = expand_wire_result({"s": "Fixed empty list fallback", "f": [{"p": "stats.py", "content": "x"}] if False else [{"p": "stats.py", "c": "def total(values):\n    return sum(values) if values else 0\n"}]})
+        self.assertEqual(compact_res["summary"], "Fixed empty list fallback")
+        self.assertEqual(compact_res["files"][0]["path"], "stats.py")
+        compact_rev = expand_wire_review({"d": "A", "h": "hash123", "r": ["All checks pass"], "e": ["D", "V"]})
+        self.assertEqual(compact_rev["decision"], "accept")
+        self.assertEqual(compact_rev["evidence_refs"], ["diff", "verification"])
+        parsed_wire = parse_ahcp_text("AHCP1|REV|R|hash456|D,S|Need empty list check")
+        self.assertEqual(parsed_wire["decision"], "rework")
+
+        # 2. Mode 2 unsplittable task -> verbatim passthrough to upstream worker
+        p_single = await self.proposal(
+            goal="修复合成样例中的空列表求和",
+            mode="decompose",
+            leader="mock",
+            provider="mock",
+            roles=[{"role": "upstream-coder", "provider": "mock"}, {"role": "reviewer-helper", "provider": "mock"}],
+        )
+        self.assertFalse(p_single["plan"]["orchestration"]["splittable"])
+        self.assertTrue(p_single["plan"]["orchestration"]["passthrough_verbatim"])
+        self.assertEqual(len(p_single["plan"]["tasks"]), 1)
+
+        # 3. Mode 2 splittable multi-role concurrent/DAG task -> executes and produces Chinese final report
+        p_split = await self.proposal(
+            goal="阶段一：实现空列表返回 0；阶段二：复核正负数与浮点数求和保持一致",
+            mode="decompose",
+            leader="mock",
+            provider="mock",
+            sub_reviewer="mock",
+            roles=[
+                {"role": "implementer", "provider": "mock", "parallel": True},
+                {"role": "verifier-guard", "provider": "mock", "parallel": True},
+            ],
+        )
+        self.assertTrue(p_split["plan"]["orchestration"]["splittable"])
+        self.assertEqual(len(p_split["plan"]["tasks"]), 2)
+        run = (await self.desktop.call("approve_start", {
+            "proposal_id": p_split["proposal_id"],
+            "plan_hash": p_split["plan_hash"],
+            "runtime_hash": p_split["runtime_hash"],
+            "confirmed": True,
+        }))["run_id"]
+        await asyncio.wait_for(self.desktop.service.jobs[run], 30)
+        detail = await self.desktop.call("run_detail", {"run_id": run})
+        self.assertEqual(detail["status"]["state"], "accepted")
+        self.assertEqual(detail["chinese_report"]["language"], "zh-CN")
+        self.assertEqual(len(detail["chinese_report"]["tasks_zh"]), 2)
+        self.assertIn("已通过 Leader 终审并验收", detail["chinese_report"]["final_state_zh"])

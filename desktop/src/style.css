@@ -455,6 +455,14 @@ p {
   gap: 12px;
 }
 
+.role-matrix {
+  background: rgba(0, 113, 227, 0.035);
+  border: 1px dashed rgba(0, 113, 227, 0.25);
+  border-radius: 14px;
+  padding: 16px 18px 4px;
+  margin-bottom: 16px;
+}
+
 label {
   display: block;
   font-size: 12px;

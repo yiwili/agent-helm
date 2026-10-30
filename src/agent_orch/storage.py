@@ -199,7 +199,7 @@ class Store:
     def accepted_tasks(self, run):
         return [dict(t) for t in self.db.execute("SELECT t.* FROM tasks t JOIN events e ON e.run_id=t.run_id AND e.task_id=t.id AND e.type='accepted' WHERE t.run_id=? AND t.state='accepted' ORDER BY e.seq", (run,))]
 
-    def claim(self, run, task, owner, lease_seconds):
+    def claim(self, run, task, owner, lease_seconds, allow_concurrent=False):
         with self.transaction():
             r = self.run(run)
             if r["state"] in ("needs_reconciliation", "cancel_requested", "cancelled"):
@@ -212,8 +212,9 @@ class Store:
             states = {x["id"]: x["state"] for x in self.tasks(run)}
             if any(states[d] != "accepted" for d in spec["dependencies"]):
                 return None
-            # v1 deliberately serializes each run; independent run processes may coexist.
-            if any(x["state"] in ("running", "verifying", "reviewing", "cancel_requested", "needs_reconciliation") for x in self.tasks(run)):
+            if any(x["state"] in ("cancel_requested", "needs_reconciliation") for x in self.tasks(run)):
+                return None
+            if not allow_concurrent and any(x["state"] in ("running", "verifying", "reviewing") for x in self.tasks(run)):
                 return None
             fence, number = t["fence"] + 1, t["attempt"] + 1
             self.db.execute("UPDATE tasks SET state='running',attempt=?,fence=?,lease=?,owner=? WHERE run_id=? AND id=?", (number, fence, time.time()+lease_seconds, owner, run, task))

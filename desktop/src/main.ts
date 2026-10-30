@@ -38,14 +38,15 @@ let tab = "tasks",
   error = "",
   notice = "";
 let taskDraftDirty = false;
+let orchMode = "direct";
 const app = document.querySelector<HTMLDivElement>("#app")!;
 const json = (value: unknown) => e(JSON.stringify(value, null, 2));
 const button = (label: string, action: string, attrs = "") =>
   `<button data-action="${action}" ${attrs} ${busy || !connected ? "disabled" : ""}>${label}</button>`;
 const labels: Record<string, string> = {
-  tasks: "任务工作台",
+  tasks: "任务编排台",
   agents: "下游 Agent",
-  settings: "连接与预算",
+  settings: "协议与预算",
 };
 const navIcons: Record<string, string> = {
   tasks: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/></svg>`,
@@ -63,41 +64,94 @@ function render() {
     )
     .join(
       "",
-    )}</nav><div class="aside-note"><i></i><div><strong>本地受控编排</strong><small>统一返回协议 · 独立测试验收</small></div></div></aside>
- <main><header><div><p class="eyebrow">SYNTHETIC WORKSPACE ORCHESTRATOR</p><h1>${labels[tab]}</h1></div><span class="pill ${connected ? "success" : "warn"}">${connected ? "桌面核心已连接" : "浏览器预览 · 未连接"}</span></header>
+    )}</nav><div class="aside-note"><i></i><div><strong>Leader-Worker 协同</strong><small>AHCP-1 省流协议 · 中文总结</small></div></div></aside>
+ <main><header><div><p class="eyebrow">MULTI-AGENT LEADER-WORKER STUDIO</p><h1>${labels[tab]}</h1></div><span class="pill ${connected ? "success" : "warn"}">${connected ? "桌面核心已连接" : "浏览器预览 · 未连接"}</span></header>
  ${error ? `<div role="alert" class="alert">${e(error)}</div>` : ""}${notice ? `<div role="status" class="notice">${e(notice)}</div>` : ""}
- <section class="scope"><span class="scope-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg></span><div><strong>受控合成实验空间 · 统一可扩展 Worker 协议 (v2)</strong><p>仅生成并操作无敏感数据的合成样例；下游 Worker 输出均规范化为统一结构化包（summary / files / operations / diagnostics / thinking / metrics），并经独立验证器自动校验。</p></div></section>
+ <section class="scope"><span class="scope-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg></span><div><strong>支持自定义 Leader 编排 · 多角色拆解/原话直通 · AHCP-1 极简英文通信协议</strong><p>输入提示词 100% 完整保留以确保理解准确；Agent 间通信与返回采用 AHCP-1 紧凑英文键（<code>s/f/p/c</code> 与 <code>d/h/r/e</code>）大幅节省输出 Token，并由模板引擎自动填充与生成中文总结。</p></div></section>
  ${tab === "tasks" ? tasks() : tab === "agents" ? agents() : settings()}
- <footer><span>Agent Helm · macOS Design System</span><span>Windows 原生沙箱 / 不执行隐藏付费探测</span></footer></main>${proposal ? approval() : ""}`;
+ <footer><span>Agent Helm · macOS Design System · AHCP-1 Wire Protocol</span><span>Windows 原生沙箱 / 不执行隐藏付费探测</span></footer></main>${proposal ? approval() : ""}`;
   bind();
+}
+
+function formatAgentOption(a: Agent): string {
+  const modelDesc = a.model || "沿用 CLI 默认模型";
+  const ctxDesc = a.context_window ? ` · ${a.context_window.toUpperCase()}` : "";
+  const effortDesc = a.reasoning_effort
+    ? ` · 思考:${a.reasoning_effort === "high" ? "高" : a.reasoning_effort === "max" ? "最大" : "低"}`
+    : "";
+  return `<option value="${e(a.provider)}">${e(a.name)} (${e(modelDesc)}${e(ctxDesc)}${e(effortDesc)})</option>`;
 }
 
 function tasks() {
   const enabledAgents = data.agents.filter((a) => a.enabled);
-  return `<div class="stats"><article><small>累计编排任务</small><strong>${data.runs.length.toString().padStart(2, "0")}</strong></article><article><small>正在并发执行</small><strong>${data.active_runs.toString().padStart(2, "0")}</strong></article><article><small>已就绪下游 Agent</small><strong>${enabledAgents.length.toString().padStart(2, "0")}</strong></article></div>
- <section class="panel"><div class="section-head"><div><h2>派发新任务</h2><p>创建全新隔离合成工作区，审阅冻结计划后交由下游 Worker 自动执行与独立测试验收。</p></div><span class="pill info">统一结果协议 v2</span></div><form id="task-form"><label>任务目标<input name="goal" required maxlength="2000" value="修复合成样例中的空列表求和"></label><div class="row"><label>下游 Worker 执行器<select name="provider">${enabledAgents
-   .map((a) => {
-     const modelDesc = a.model || "沿用 CLI 默认模型";
-     const ctxDesc = a.context_window
-       ? ` · ${a.context_window.toUpperCase()}`
-       : "";
-     const effortDesc = a.reasoning_effort
-       ? ` · 思考:${a.reasoning_effort === "high" ? "高" : a.reasoning_effort === "max" ? "最大" : "低"}`
-       : "";
-     return `<option value="${e(a.provider)}">${e(a.name)} (${e(modelDesc)}${e(ctxDesc)}${e(effortDesc)})</option>`;
-   })
-   .join(
-     "",
-   )}</select></label><label class="check"><input type="checkbox" name="fault_demo">Mock 首轮注入故障，演示自动返工闭环</label></div>${button("生成待审批计划 →", "create", 'type="submit" class="btn-primary"')}</form></section>
- <section class="panel"><div class="section-head"><div><h2>运行记录与证据链</h2><p>点击任一记录查看统一 Worker 响应包、代码 Diff 及独立验收状态。</p></div>${button("刷新列表", "refresh")}</div>${
+  const agentOpts = enabledAgents.map(formatAgentOption).join("");
+  return `<div class="stats"><article><small>累计编排任务</small><strong>${data.runs.length.toString().padStart(2, "0")}</strong></article><article><small>正在并发执行</small><strong>${data.active_runs.toString().padStart(2, "0")}</strong></article><article><small>已就绪 Agent</small><strong>${enabledAgents.length.toString().padStart(2, "0")}</strong></article></div>
+ <section class="panel"><div class="section-head"><div><h2>Leader-Worker 协同任务编排</h2><p>支持「模式一：Leader 直派单 Worker 闭环」与「模式二：Leader 任务拆解 + 多角色分配（不可拆解时自动原话直通上游 Agent）」。</p></div><span class="pill info">AHCP-1 省 Token 协议</span></div>
+ <form id="task-form">
+   <label>任务目标（支持使用分号 <code>；</code> 或换行书写多阶段目标供模式二拆解；若为单原子任务将原话直通）
+     <input name="goal" required maxlength="2000" value="修复合成样例中的空列表求和">
+   </label>
+   <div class="row compact-row">
+     <label>编排模式 (Orchestration Mode)
+       <select name="mode" id="orch-mode-select">
+         <option value="direct" ${orchMode === "direct" ? "selected" : ""}>模式一：Leader -> 指定 Worker -> Leader 审查 (支持返工闭环)</option>
+         <option value="decompose" ${orchMode === "decompose" ? "selected" : ""}>模式二：Leader 拆解任务 -> 多角色并发/协同 -> (次级 Reviewer) -> Leader 终审</option>
+       </select>
+     </label>
+     <label>指定 Leader (发起者 / 终审 Brain)
+       <select name="leader">
+         <option value="mock">内置确定性 Leader (零 Token 消耗 · 独立测试驱动)</option>
+         ${enabledAgents.filter((a) => a.provider !== "mock").map((a) => `<option value="${e(a.provider)}">${e(a.name)} 作为 Leader (${e(a.model || "默认模型")})</option>`).join("")}
+         <option value="interactive">人工 Leader (暂停等待人工审查裁决)</option>
+       </select>
+     </label>
+   </div>
+   <div class="row compact-row">
+     <label>主力 / 默认上游 Worker（模式一执行者，或模式二无法拆解时的原话直通 Agent）
+       <select name="provider">${agentOpts}</select>
+     </label>
+     <label>次级 Reviewer (Sub-Reviewer，可选)
+       <select name="sub_reviewer">
+         <option value="">不设置次级 Reviewer（直接交由 Leader 审查）</option>
+         ${agentOpts}
+       </select>
+     </label>
+   </div>
+   <div class="role-matrix" ${orchMode === "decompose" ? "" : "hidden"}>
+     <div class="section-head" style="margin-bottom:8px">
+       <div><strong>模式二：角色分配矩阵 (Role Assignments)</strong><p>当任务可拆解时，Leader 将各阶段目标分别派发给以下角色；若任务不可拆解，Leader 将给出说明并把原话直接传给角色 1。</p></div>
+     </div>
+     <div class="row compact-row">
+       <label>角色 1 名称<input name="role_1_name" value="implementer" placeholder="如 implementer / 编码实现"></label>
+       <label>角色 1 执行 Agent<select name="role_1_worker">${agentOpts}</select></label>
+       <label class="check" style="margin-top:18px"><input type="checkbox" name="role_1_parallel">允许并发</label>
+     </div>
+     <div class="row compact-row">
+       <label>角色 2 名称<input name="role_2_name" value="verifier-guard" placeholder="如 verifier-guard / 边界复核"></label>
+       <label>角色 2 执行 Agent<select name="role_2_worker">${agentOpts}</select></label>
+       <label class="check" style="margin-top:18px"><input type="checkbox" name="role_2_parallel">允许并发 (无前置依赖)</label>
+     </div>
+   </div>
+   <div class="row">
+     <label class="check"><input type="checkbox" name="fault_demo">Mock 首轮注入故障，演示 Leader 打回通知 Worker 返工修正闭环</label>
+   </div>
+   ${button("生成待审批计划 →", "create", 'type="submit" class="btn-primary"')}
+ </form></section>
+ <section class="panel"><div class="section-head"><div><h2>运行记录与中文汇总结论</h2><p>点击任一记录查看 Leader 拆解说明、AHCP-1 通信帧、代码 Diff 及中文总结报告。</p></div>${button("刷新列表", "refresh")}</div>${
    data.runs.length
      ? `<div class="runs">${data.runs
          .map((r) => {
            const badge = providerBadge(r.provider);
-           return `<button class="run" data-action="${r.run_id ? "detail" : "proposal"}" data-id="${e(r.run_id || r.proposal_id)}"><span class="run-icon ${badge.accent}">${badge.svg}</span><span><strong>${e(r.goal)}</strong><small>${e(badge.title)} · ${e((r.run_id || r.proposal_id).slice(0, 28))}</small></span><span class="pill ${stateTone(r.state)}">${e(stateLabel(r.state))}</span></button>`;
+           const modeBadge =
+             r.mode === "decompose"
+               ? r.splittable
+                 ? "模式二·多角色拆解"
+                 : "模式二·原话直通"
+               : "模式一·直派闭环";
+           return `<button class="run" data-action="${r.run_id ? "detail" : "proposal"}" data-id="${e(r.run_id || r.proposal_id)}"><span class="run-icon ${badge.accent}">${badge.svg}</span><span><strong>${e(r.goal)}</strong><small>Leader: ${e(r.leader || "mock")} · Worker: ${e(badge.title)} · ${modeBadge} · ${e((r.run_id || r.proposal_id).slice(0, 24))}</small></span><span class="pill ${stateTone(r.state)}">${e(stateLabel(r.state))}</span></button>`;
          })
          .join("")}</div>`
-     : '<div class="empty"><div class="empty-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M8 10h8M8 14h5"/></svg></div><h3>尚无任务记录</h3><p>您可以先使用离线 Mock 或已启用的 Qoder CN / DeepSeek / Antigravity 运行合成验证。</p></div>'
+     : '<div class="empty"><div class="empty-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M8 10h8M8 14h5"/></svg></div><h3>尚无任务记录</h3><p>您可以选择模式一或模式二，指定 Leader 与下游 Worker 启动协同任务。</p></div>'
  }</section>${detail ? details() : ""}`;
 }
 
@@ -126,7 +180,7 @@ function probeCard(probe: any): string {
 }
 
 function agents() {
-  return `<div class="section-head"><div><h2>配置下游 Worker 代理与思考参数</h2><p>支持自动发现本机 CLI 或直接粘贴可执行文件路径；切换模型、上下文窗口或思考强度后点击「保存配置」或「检查连接」即可自动生效。</p></div></div><div class="agent-grid">${data.agents
+  return `<div class="section-head"><div><h2>配置下游 Worker 与 Leader 代理参数</h2><p>支持自动发现本机 CLI 或直接粘贴可执行文件路径；切换模型、上下文窗口或思考强度后点击「保存配置」或「检查连接」即可自动生效。</p></div></div><div class="agent-grid">${data.agents
     .map((a) => {
       const badge = providerBadge(a.provider);
       const options = modelOptions(a);
@@ -153,7 +207,7 @@ function agents() {
           </div>
           <div class="row compact-row">
             <label>连接方式<select name="connection"><option value="auto" ${a.connection === "auto" ? "selected" : ""}>自动发现本机 CLI</option><option value="path" ${a.connection === "path" ? "selected" : ""}>指定本机原生 CLI 路径</option></select></label>
-            <label>执行验收模式<select name="review_mode">
+            <label>默认审查模式<select name="review_mode">
               <option value="auto" ${reviewMode === "auto" ? "selected" : ""}>独立测试通过后自动完结</option>
               <option value="interactive" ${reviewMode === "interactive" ? "selected" : ""}>暂停等待人工审查确认</option>
             </select></label>
@@ -165,15 +219,51 @@ function agents() {
 }
 
 function settings() {
-  return `<section class="panel"><h2>本地连接与统一返回规范</h2><p>支持自动发现和指定原生 CLI 文件。连接探测只读取版本与认证状态，不启动付费模型推理。</p><dl><dt>运行状态根目录（仓库外隔离）</dt><dd><code>${e(data.state_root || "未连接")}</code></dd><dt>认证安全边界</dt><dd>由各 CLI 独立管理（如 Qoder CN 官方登录、Antigravity 本地认证、CC Switch）；Agent Helm 绝不提取或复制任何密钥。</dd><dt>已集成下游 Worker 通道</dt><dd>Mock / OpenAI Codex / Claude CLI / Qoder CN / DeepSeek Harness / Gemini (Antigravity CLI)。</dd><dt>Worker 统一返回协议</dt><dd><code>agent-helm.worker-result.v2</code>（包含 summary、files、operations、diagnostics、thinking、metrics、artifacts、extensions）。</dd></dl></section><section class="panel"><h2>Claude 独立预算账本</h2><p>每次推理前从本地账本预留。失败不自动退款；费用不确定时停止并人工核对。CLI 估算不能保证代理账单硬上限。</p><form id="budget-form"><div class="row"><label>本次新增总额度（USD）<input name="total" type="number" min="0.01" step="0.01" value="0.30" required></label><label>单次最高（USD）<input name="per_call" type="number" min="0.01" step="0.01" value="0.10" required></label></div><label class="check"><input name="confirmed" type="checkbox" required>我明确授权此新增额度；创建账本本身不会调用模型。</label><div class="actions">${button("确认创建新账本", "budget", 'type="submit" class="btn-primary"')}${button("读取账本状态", "budget-status", 'type="button"')}</div></form></section>`;
+  return `<section class="panel"><h2>AHCP-1 极简 Agent 间通信协议与模板填充规范</h2><p>传入给每个 Agent 的任务目标与验证器契约保持 100% 完整，绝不删减提示词以避免理解偏差；而在 Agent 返回及相互通信时采用英文单字母紧凑键以显著降低输出 Token 消耗：</p><dl><dt>1. Worker 紧凑输出格式 (节省约 50% 结构 Token)</dt><dd>Worker 仅需输出英文紧凑 JSON：<code>{"s":"concise summary","f":[{"p":"stats.py","c":"..."}]}</code> 或行式 <code>AHCP1|RES|...</code>，由 <code>scripts/ahcp_codec.py</code> 与 <code>wire.py</code> 自动填充为完整的 <code>agent-helm.worker-result.v2</code> 模板。</dd><dt>2. Leader / Sub-Reviewer 紧凑审查格式</dt><dd>Reviewer 仅需输出 <code>{"d":"A|R|E","h":"&lt;hash&gt;","r":["reason"],"e":["D","V"]}</code>（<code>A</code>=通过、<code>R</code>=通知 Worker 返工、<code>E</code>=升级），自动填充为标准审查决议。</dd><dt>3. 最终中文汇总报告</dt><dd>所有英文内部通信帧在执行完毕后统一生成面向用户的中文编排报告（含模式说明、拆解判断依据、角色执行结论与验证状态）。</dd><dt>4. 运行状态根目录</dt><dd><code>${e(data.state_root || "未连接")}</code></dd></dl></section><section class="panel"><h2>Claude 独立预算账本</h2><p>每次推理前从本地账本预留。失败不自动退款；费用不确定时停止并人工核对。CLI 估算不能保证代理账单硬上限。</p><form id="budget-form"><div class="row"><label>本次新增总额度（USD）<input name="total" type="number" min="0.01" step="0.01" value="0.30" required></label><label>单次最高（USD）<input name="per_call" type="number" min="0.01" step="0.01" value="0.10" required></label></div><label class="check"><input name="confirmed" type="checkbox" required>我明确授权此新增额度；创建账本本身不会调用模型。</label><div class="actions">${button("确认创建新账本", "budget", 'type="submit" class="btn-primary"')}${button("读取账本状态", "budget-status", 'type="button"')}</div></form></section>`;
 }
 
 function approval() {
-  return `<div class="overlay"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="approval-title"><p class="eyebrow">HUMAN APPROVAL GATE</p><h2 id="approval-title">审阅计划与冻结 Worker 配置</h2><p>确认后将立即启动该 Worker 执行合成任务。真实 CLI 可能消耗订阅额度；Claude 须具备已授权账本。</p><pre>${json({ plan: proposal.plan, agent_configuration: proposal.agent_configuration, plan_hash: proposal.plan_hash, runtime_hash: proposal.runtime_hash })}</pre><form id="approve-form"><label class="check"><input type="checkbox" name="confirmed" required>我已审阅此计划、模型和连接配置，授权本次执行。</label><div class="actions">${button("确认并启动执行", "approve", 'type="submit" class="btn-primary"')}<button type="button" data-action="close">稍后处理</button></div></form></section></div>`;
+  const orch = proposal.plan?.orchestration;
+  return `<div class="overlay"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="approval-title"><p class="eyebrow">HUMAN APPROVAL GATE</p><h2 id="approval-title">审阅 Leader 编排计划与 Worker 角色分配</h2>${
+    orch
+      ? `<div class="probe-card" style="margin-bottom:12px">
+          <div class="probe-badges">
+            <span class="pill info">${e(orch.mode === "decompose" ? "模式二：Leader 拆解/多角色编排" : "模式一：Leader 直派单 Worker")}</span>
+            <span class="pill ${orch.splittable ? "success" : "warn"}">${e(orch.splittable ? "已拆解为多角色子任务" : "原子任务 · 原话直通上游 Worker")}</span>
+            <span class="pill">Leader: ${e(orch.leader)}</span>
+          </div>
+          <p style="margin:4px 0 0;font-size:12.5px"><strong>拆解评估：</strong>${e(orch.decomposition_reason)}</p>
+        </div>`
+      : ""
+  }<pre>${json({ plan: proposal.plan, agent_configuration: proposal.agent_configuration, plan_hash: proposal.plan_hash, runtime_hash: proposal.runtime_hash })}</pre><form id="approve-form"><label class="check"><input type="checkbox" name="confirmed" required>我已审阅此计划、Leader 拆解方案和连接配置，授权本次执行。</label><div class="actions">${button("确认并启动执行", "approve", 'type="submit" class="btn-primary"')}<button type="button" data-action="close">稍后处理</button></div></form></section></div>`;
 }
 
 function details() {
   const s = detail.status;
+  const zh = detail.chinese_report;
+  const zhBanner = zh
+    ? `<div class="probe-card" style="margin-bottom:16px;background:rgba(0,113,227,0.04);border-color:rgba(0,113,227,0.18)">
+        <div class="probe-badges">
+          <span class="pill info">${e(zh.orchestration_mode_zh)}</span>
+          <span class="pill ${zh.final_state === "accepted" ? "success" : "warn"}">${e(zh.final_state_zh)}</span>
+          <span class="pill">通信协议: ${e(zh.protocol)}</span>
+        </div>
+        <p style="margin:6px 0;color:#1d1d1f"><strong>Leader 拆解与调度说明：</strong>${e(zh.decomposition_explanation_zh)}</p>
+        ${
+          zh.tasks_zh?.length
+            ? `<div style="display:grid;gap:6px;margin-top:8px">${zh.tasks_zh
+                .map(
+                  (t: any) =>
+                    `<div style="font-size:12.5px;padding:8px 12px;background:#fff;border-radius:10px;border:1px solid rgba(0,0,0,0.06)">
+                      <strong>节点 ${e(t.task_id)}</strong> · 角色: <code>${e(t.role)}</code> · 执行器: <code>${e(t.worker)}</code>${t.sub_reviewer ? ` · 次级审查: <code>${e(t.sub_reviewer)}</code>` : ""} · 尝试 ${e(t.attempt_count)} 次 · Leader 裁决: <strong>${e(t.leader_decision_zh)}</strong><br>
+                      <span style="color:#48484a">${e(t.summary_zh)}</span>
+                    </div>`,
+                )
+                .join("")}</div>`
+            : ""
+        }
+      </div>`
+    : "";
   const evidence = detail.evidence
     .map(
       (ev: any) =>
@@ -189,22 +279,25 @@ function details() {
                   wr.thinking.reasoning_effort
                     ? `思考强度: ${wr.thinking.reasoning_effort}`
                     : "",
+                  wr.extensions?.role ? `角色: ${wr.extensions.role}` : "",
                 ]
                   .filter(Boolean)
                   .join(" · ")
               : "";
-            return `<section class="attempt-box"><div class="section-head"><p class="attempt-title">第 ${e(a.attempt)} 次尝试 · <strong>${e(stateLabel(a.state))}</strong></p><div class="evidence-gates"><span class="pill ${a.verification_passed ? "success" : "warn"}">独立测试 ${a.verification_passed ? "通过" : "未通过"}</span><span class="pill ${a.scope_ok ? "success" : "warn"}">修改范围 ${a.scope_ok ? "受控" : "越界"}</span>${wr?.protocol ? `<span class="pill info">${e(wr.protocol)}</span>` : ""}</div></div>${thinkingInfo ? `<p class="thinking-meta">${e(thinkingInfo)}</p>` : ""}${wr?.summary ? `<p class="worker-summary"><strong>Worker 摘要：</strong>${e(wr.summary)}</p>` : ""}<pre>${e(a.diff || "尚无候选差异")}</pre><small>候选快照哈希 (SHA-256)：${e(a.candidate_hash || "尚未生成")}</small></section>`;
+            const zhSummary = wr?.extensions?.summary_zh;
+            const wireFrame = wr?.extensions?.wire_frame;
+            return `<section class="attempt-box"><div class="section-head"><p class="attempt-title">第 ${e(a.attempt)} 次尝试 · <strong>${e(stateLabel(a.state))}</strong></p><div class="evidence-gates"><span class="pill ${a.verification_passed ? "success" : "warn"}">独立测试 ${a.verification_passed ? "通过" : "未通过"}</span><span class="pill ${a.scope_ok ? "success" : "warn"}">修改范围 ${a.scope_ok ? "受控" : "越界"}</span>${wr?.protocol ? `<span class="pill info">${e(wr.protocol)}</span>` : ""}</div></div>${thinkingInfo ? `<p class="thinking-meta">${e(thinkingInfo)}</p>` : ""}${zhSummary ? `<p class="worker-summary"><strong>中文总结：</strong>${e(zhSummary)}</p>` : wr?.summary ? `<p class="worker-summary"><strong>Worker 摘要：</strong>${e(wr.summary)}</p>` : ""}${wireFrame ? `<small style="display:block;margin-bottom:6px;color:#0071e3">AHCP-1 通信帧：<code>${e(wireFrame)}</code></small>` : ""}<pre>${e(a.diff || "尚无候选差异")}</pre><small>候选快照哈希 (SHA-256)：${e(a.candidate_hash || "尚未生成")}</small></section>`;
           })
           .join("")}</article>`,
     )
     .join("");
-  return `<section class="panel" id="detail"><div class="section-head"><div><h2>执行证据链 · ${e(stateLabel(s.state))}</h2><p>以下候选差异与结构化响应均来自隔离快照及独立验证器。</p></div>${button("刷新证据", "detail", `data-id="${e(s.run_id || s.id)}"`)}</div>${evidence || "<p>等待执行器生成候选和验证证据...</p>"}<details><summary>展开完整协议包与审查记录 (JSON)</summary><pre>${json({ tasks: s.tasks, events: detail.events, evidence: detail.evidence })}</pre></details><div class="actions">${button("请求取消", "cancel", `data-id="${e(s.run_id || s.id)}"`)}${s.state === "queued" ? button("确认继续返工", "resume", `data-id="${e(s.run_id || s.id)}" class="btn-primary"`) : ""}${s.state === "accepted" ? button("集成到独立验收目录", "integrate", `data-id="${e(s.run_id || s.id)}" class="btn-primary"`) : ""}</div>${
+  return `<section class="panel" id="detail"><div class="section-head"><div><h2>执行证据链与中文结项报告 · ${e(stateLabel(s.state))}</h2><p>内部通信采用英文 AHCP-1 紧凑协议节省 Token，最终结项内容统一以中文呈现。</p></div>${button("刷新证据", "detail", `data-id="${e(s.run_id || s.id)}"`)}</div>${zhBanner}${evidence || "<p>等待执行器生成候选和验证证据...</p>"}<details><summary>展开完整协议包与审查记录 (JSON)</summary><pre>${json({ chinese_report: detail.chinese_report, tasks: s.tasks, events: detail.events, evidence: detail.evidence })}</pre></details><div class="actions">${button("请求取消", "cancel", `data-id="${e(s.run_id || s.id)}"`)}${s.state === "queued" ? button("确认继续返工", "resume", `data-id="${e(s.run_id || s.id)}" class="btn-primary"`) : ""}${s.state === "accepted" ? button("集成到独立验收目录", "integrate", `data-id="${e(s.run_id || s.id)}" class="btn-primary"`) : ""}</div>${
     s.state === "reviewing"
       ? detail.evidence
           .map((ev: any, i: number) => {
             const candidate = ev.attempts?.at(-1);
             return candidate
-              ? `<form class="review-form" data-task="${e(s.tasks[i].id)}" data-hash="${e(candidate.candidate_hash)}"><h3>人工审查裁决：${e(s.tasks[i].id)}</h3><select name="decision"><option value="accept">接受候选（须独立测试与范围校验通过）</option><option value="rework">要求 Worker 返工</option><option value="escalate">升级为人工介入</option></select><label class="check"><input type="checkbox" name="confirmed" required>我已核对以上代码 Diff 与独立测试结果。</label>${button("提交审查裁决", "review", 'type="submit" class="btn-primary"')}</form>`
+              ? `<form class="review-form" data-task="${e(s.tasks[i].id)}" data-hash="${e(candidate.candidate_hash)}"><h3>人工 Leader 审查裁决：${e(s.tasks[i].id)}</h3><select name="decision"><option value="accept">通过 (Accept · 须独立测试与范围校验通过)</option><option value="rework">拒绝并通知 Worker 返工 (Rework)</option><option value="escalate">升级为人工介入 (Escalate)</option></select><label class="check"><input type="checkbox" name="confirmed" required>我已核对以上代码 Diff 与独立测试结果。</label>${button("提交审查裁决", "review", 'type="submit" class="btn-primary"')}</form>`
               : "";
           })
           .join("")
@@ -224,15 +317,21 @@ function collectAgentProfile(form: HTMLFormElement, autoEnable = false): Agent {
       ? String(f.get("connection") || "auto")
       : "auto";
   const hasEnabled =
-    old.provider === "mock" || f.has("enabled") || (autoEnable && Boolean(executable || customModel || selectedModel));
+    old.provider === "mock" ||
+    f.has("enabled") ||
+    (autoEnable && Boolean(executable || customModel || selectedModel));
   return {
     ...old,
     enabled: hasEnabled,
     model: customModel || selectedModel,
     connection,
     executable,
-    context_window: String(f.get("context_window") ?? old.context_window ?? "").trim(),
-    reasoning_effort: String(f.get("reasoning_effort") ?? old.reasoning_effort ?? "").trim(),
+    context_window: String(
+      f.get("context_window") ?? old.context_window ?? "",
+    ).trim(),
+    reasoning_effort: String(
+      f.get("reasoning_effort") ?? old.reasoning_effort ?? "",
+    ).trim(),
     review_mode: String(f.get("review_mode") ?? old.review_mode ?? "auto").trim(),
   };
 }
@@ -258,6 +357,13 @@ function bind() {
   app.querySelector("#task-form")?.addEventListener("input", () => {
     taskDraftDirty = true;
   });
+  app
+    .querySelector<HTMLSelectElement>("#orch-mode-select")
+    ?.addEventListener("change", (ev) => {
+      orchMode = (ev.currentTarget as HTMLSelectElement).value;
+      const matrix = app.querySelector<HTMLElement>(".role-matrix");
+      if (matrix) matrix.hidden = orchMode !== "decompose";
+    });
   app.querySelectorAll<HTMLElement>("[data-tab]").forEach(
     (el) =>
       (el.onclick = () => {
@@ -315,12 +421,39 @@ function bind() {
     ?.addEventListener("submit", (ev) => {
       ev.preventDefault();
       const f = new FormData(ev.currentTarget as HTMLFormElement);
+      const modeVal = String(f.get("mode") || "direct");
+      const leaderVal = String(f.get("leader") || "");
+      const subRevVal = String(f.get("sub_reviewer") || "");
+      const payload: Record<string, any> = {
+        goal: f.get("goal"),
+        provider: f.get("provider"),
+        fault_demo: f.has("fault_demo"),
+      };
+      if (modeVal && modeVal !== "direct") {
+        payload.mode = modeVal;
+      }
+      if (leaderVal && leaderVal !== "mock") {
+        payload.leader = leaderVal;
+      }
+      if (subRevVal) {
+        payload.sub_reviewer = subRevVal;
+      }
+      if (modeVal === "decompose") {
+        payload.roles = [
+          {
+            role: String(f.get("role_1_name") || "implementer").trim(),
+            provider: String(f.get("role_1_worker") || f.get("provider")),
+            parallel: f.has("role_1_parallel"),
+          },
+          {
+            role: String(f.get("role_2_name") || "verifier-guard").trim(),
+            provider: String(f.get("role_2_worker") || f.get("provider")),
+            parallel: f.has("role_2_parallel"),
+          },
+        ];
+      }
       void perform(async () => {
-        const p = await request("create_task", {
-          goal: f.get("goal"),
-          provider: f.get("provider"),
-          fault_demo: f.has("fault_demo"),
-        });
+        const p = await request("create_task", payload);
         taskDraftDirty = false;
         proposal = await request("proposal", { proposal_id: p.proposal_id });
         await refresh();

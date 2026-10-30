@@ -10,11 +10,12 @@ from pathlib import Path
 
 from .adapters.codex_cli import model_id, redact, unique_object
 from .adapters.qoder_cn_cli import REASONING_EFFORTS, THINKING_MODES, normalize_context_window, resolve_executable_path
-from .brain import fixture_plan
+from .brain import decompose_or_passthrough_plan, fixture_plan
 from .budget import Budget, create_budget
 from .models import OrchError, digest
 from .scheduler import Scheduler
 from .service import Service
+from .wire import build_chinese_orchestration_report
 
 PROVIDERS = {
     "mock": "Mock",
@@ -160,10 +161,12 @@ class Desktop:
         temporary.write_text(json.dumps(self.profiles, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(temporary, self.path)
 
-    def runtime(self, profiles, provider):
+    def runtime(self, profiles, provider, leader=None):
         profile = profiles[provider]
         if not profile["enabled"]:
             raise OrchError("Enable this agent before creating its task")
+        if leader and leader in profiles and leader not in ("mock", "interactive") and not profiles[leader]["enabled"]:
+            raise OrchError(f"Enable leader agent '{leader}' before selecting it as Leader")
         paths = {key: value["executable"] if value["connection"] == "path" else None for key, value in profiles.items()}
         worker_options = {
             key: {
@@ -175,7 +178,12 @@ class Desktop:
             for key, value in profiles.items()
         }
         review_mode = profile.get("review_mode", "auto")
-        brain = "mock" if (provider == "mock" or review_mode == "auto") else "interactive"
+        if leader in ("interactive", "human"):
+            brain = "interactive"
+        elif leader in ("codex", "qoder-cn", "claude", "deepseek", "antigravity"):
+            brain = leader
+        else:
+            brain = "mock" if (provider == "mock" or review_mode == "auto" or leader == "mock") else "interactive"
         return {
             "enable_codex": profiles["codex"]["enabled"],
             "enable_claude": profiles["claude"]["enabled"],
@@ -200,7 +208,10 @@ class Desktop:
             proposal = self.service.proposal(row["id"])
             plan = proposal["plan"]
             status = self.status(row["run"]) if row["run"] else {"state": proposal["state"], "tasks": []}
+            orch = plan.get("orchestration") if isinstance(plan.get("orchestration"), dict) else {}
             runs.append({"proposal_id": row["id"], "run_id": row["run"], "goal": plan["goal"], "provider": plan["tasks"][0]["provider"],
+                         "leader": orch.get("leader", "mock"), "mode": orch.get("mode", "direct"),
+                         "splittable": orch.get("splittable", False),
                          "state": status["state"], "tasks": status["tasks"]})
         return {"agents": list(self.profiles.values()), "runs": runs, "probes": self.probes, "scope": "synthetic-only", "state_root": str(self.service.root),
                 "active_runs": sum(not job.done() for job in self.service.jobs.values())}
@@ -259,16 +270,42 @@ class Desktop:
             provider = payload.get("provider", "mock")
             if provider not in PROVIDERS:
                 raise OrchError("Unsupported worker")
-            runtime = self.runtime(self.profiles, provider)
-            if provider == "claude":
+            leader = payload.get("leader") or None
+            mode = payload.get("mode", "direct")
+            sub_reviewer = payload.get("sub_reviewer") or None
+            if sub_reviewer and sub_reviewer not in PROVIDERS:
+                raise OrchError("Unsupported sub_reviewer")
+            if sub_reviewer and sub_reviewer != "mock" and not self.profiles[sub_reviewer]["enabled"]:
+                raise OrchError(f"Enable sub-reviewer agent '{sub_reviewer}' before selecting it")
+            role_assignments = payload.get("roles") if isinstance(payload.get("roles"), list) else None
+            if role_assignments:
+                for item in role_assignments:
+                    if isinstance(item, dict) and item.get("provider") in PROVIDERS and item["provider"] != "mock":
+                        if not self.profiles[item["provider"]]["enabled"]:
+                            raise OrchError(f"Enable role worker '{item['provider']}' before creating multi-role task")
+            runtime = self.runtime(self.profiles, provider, leader=leader)
+            if provider == "claude" or leader == "claude" or sub_reviewer == "claude":
                 budget = Budget(runtime["claude_budget_ledger"])
                 budget.close()
             fixture = await self.service.call("helm_fixture_create", {})
             goal = payload.get("goal", "修复合成样例中的空列表求和")
             if not isinstance(goal, str) or not 1 <= len(goal) <= 2000:
                 raise OrchError("Task goal must be 1..2000 characters")
-            plan = fixture_plan(goal=goal, provider=provider, behavior="bad-first" if payload.get("fault_demo") and provider == "mock" else "good")
-            plan["tasks"][0]["milestone_review"] = False
+            behavior = "bad-first" if payload.get("fault_demo") and provider == "mock" else "good"
+            if leader or mode == "decompose" or role_assignments or sub_reviewer:
+                plan = decompose_or_passthrough_plan(
+                    goal=goal,
+                    leader=leader or runtime["brain"],
+                    mode=mode,
+                    primary_worker=provider,
+                    role_assignments=role_assignments,
+                    sub_reviewer=sub_reviewer,
+                    behavior=behavior,
+                )
+            else:
+                plan = fixture_plan(goal=goal, provider=provider, behavior=behavior)
+            for t in plan["tasks"]:
+                t["milestone_review"] = False
             result = await self.service.call("helm_plan_prepare", {"workspace_id": fixture["workspace_id"], "plan": plan})
             # Freeze human-selected connection/model at proposal creation, not at a later run.
             path = self.service.root / (result["proposal_id"] + ".desktop.json")
@@ -303,10 +340,30 @@ class Desktop:
             return {"run_id": run}
         if action == "run_detail":
             run = payload["run_id"]
-            self.service._owned(run)
+            owned = self.service._owned(run)
             status = self.status(run)
-            return {"status": status, "events": await self.service.call("helm_events_get", {"run_id": run, "limit": 100}),
-                    "evidence": [await self.service.call("helm_evidence_get", {"run_id": run, "task_id": task["id"]}) for task in status["tasks"]]}
+            evidence_list = [await self.service.call("helm_evidence_get", {"run_id": run, "task_id": task["id"]}) for task in status["tasks"]]
+            plan = json.loads(owned["plan"])
+            orch = plan.get("orchestration") if isinstance(plan.get("orchestration"), dict) else {}
+            attempts_by_task = {ev["task_id"]: ev["attempts"] for ev in evidence_list}
+            reviews_by_task = {ev["task_id"]: ev["reviews"] for ev in evidence_list}
+            chinese_report = build_chinese_orchestration_report(
+                mode=orch.get("mode", "direct"),
+                leader=orch.get("leader", "mock"),
+                splittable=bool(orch.get("splittable", False)),
+                decomposition_reason=orch.get("decomposition_reason", "Standard single-worker task execution"),
+                tasks=plan["tasks"],
+                attempts_by_task=attempts_by_task,
+                reviews_by_task=reviews_by_task,
+                final_state=status["state"],
+            )
+            return {
+                "status": status,
+                "events": await self.service.call("helm_events_get", {"run_id": run, "limit": 100}),
+                "evidence": evidence_list,
+                "orchestration": orch,
+                "chinese_report": chinese_report,
+            }
         if action == "review":
             if payload.get("confirmed") is not True or payload.get("decision") not in ("accept", "rework", "escalate"):
                 raise OrchError("Explicit review decision required")

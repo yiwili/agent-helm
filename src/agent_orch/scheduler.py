@@ -71,7 +71,7 @@ class Scheduler:
         self.worker_options = options
         self.brain_name = brain
         self.brain_adapter = self.adapters.get(brain)
-        self.brain = CodexBrain(self.brain_adapter) if brain in ("codex", "qoder-cn") else MockBrain()
+        self.brain = CodexBrain(self.brain_adapter) if brain in ("codex", "qoder-cn", "claude", "deepseek", "antigravity") else MockBrain()
         self.owner = uuid.uuid4().hex
         self.lost_leases = set()
 
@@ -115,52 +115,73 @@ class Scheduler:
         self.store.recover()
         r = self.store.run(run)
         plan = json.loads(r["plan"])
-        for t in self.store.ordered_tasks(run):
-            if t["state"] != "queued":
-                continue
-            task = json.loads(t["spec"])
-            if task["provider"] in ("codex", "qoder-cn", "cursor", "claude", "deepseek", "antigravity") and not self.adapters[task["provider"]].enabled:
-                self.store.transition(run, t["id"], "blocked", payload={"reason": task["provider"]+" disabled; no API fallback"})
-                continue
-            if self.brain_name == "mock" and task["provider"] == "manual":
-                self.store.transition(run, t["id"], "blocked", payload={"reason": "Real/manual workers require codex, qoder-cn or interactive review"})
-                continue
-            if task["provider"] == "claude":
-                from .budget import Budget
-                try:
-                    budget = Budget(self.claude.budget_ledger, r["source"])
-                    budget.close()
-                except (OrchError, ProviderBlocked) as e:
-                    self.store.transition(run, t["id"], "blocked", payload={"reason": str(e)})
+        # Group ordered tasks into dependency waves so independent tasks in a wave can run concurrently
+        completed_ids = {t["id"] for t in self.store.tasks(run) if t["state"] == "accepted"}
+        while True:
+            all_rows = self.store.tasks(run)
+            queued_rows = [
+                t for t in all_rows
+                if t["state"] == "queued" and set(json.loads(t["spec"])["dependencies"]) <= completed_ids
+            ]
+            if not queued_rows:
+                break
+            eligible = []
+            for t in queued_rows:
+                task = json.loads(t["spec"])
+                if task["provider"] in ("codex", "qoder-cn", "cursor", "claude", "deepseek", "antigravity") and not self.adapters[task["provider"]].enabled:
+                    self.store.transition(run, t["id"], "blocked", payload={"reason": task["provider"]+" disabled; no API fallback"})
                     continue
-            if self.brain_name in ("codex", "qoder-cn") and not self.brain_adapter.enabled:
-                self.store.transition(run, t["id"], "blocked", payload={"reason": "Selected review provider is disabled"})
-                continue
-            while True:
-                claimed = self.store.claim(run, t["id"], self.owner, task["wall_seconds"] + 360)
-                if not claimed:
-                    break
-                attempt, fence = claimed
-                heartbeat = asyncio.create_task(self._heartbeat(run, t["id"], fence))
-                try:
-                    await self._attempt(r, task, attempt, fence)
-                except asyncio.CancelledError:
-                    self._settle_error(run, t["id"], fence, asyncio.CancelledError())
-                    break
-                except Exception as e:
-                    self._settle_error(run, t["id"], fence, e)
-                    break
-                finally:
-                    heartbeat.cancel()
-                    await asyncio.gather(heartbeat, return_exceptions=True)
-                current = next(x for x in self.store.tasks(run) if x["id"] == t["id"])
-                if current["state"] != "rework":
-                    break
-                if attempt > plan["max_rework_rounds"]:
-                    self.store.transition(run, t["id"], "escalated", fence)
-                    break
-                self.store.transition(run, t["id"], "queued", fence)
+                if self.brain_name == "mock" and task["provider"] == "manual":
+                    self.store.transition(run, t["id"], "blocked", payload={"reason": "Real/manual workers require codex, qoder-cn or interactive review"})
+                    continue
+                if task["provider"] == "claude":
+                    from .budget import Budget
+                    try:
+                        budget = Budget(self.claude.budget_ledger, r["source"])
+                        budget.close()
+                    except (OrchError, ProviderBlocked) as e:
+                        self.store.transition(run, t["id"], "blocked", payload={"reason": str(e)})
+                        continue
+                if self.brain_name in ("codex", "qoder-cn", "claude", "deepseek", "antigravity") and not self.brain_adapter.enabled:
+                    self.store.transition(run, t["id"], "blocked", payload={"reason": "Selected review provider is disabled"})
+                    continue
+                eligible.append((t, task))
+            if not eligible:
+                break
+            concurrent_wave = len(eligible) > 1
+            await asyncio.gather(*(self._run_task_lifecycle(r, plan, t["id"], task, concurrent_wave) for t, task in eligible))
+            new_accepted = {t["id"] for t in self.store.tasks(run) if t["state"] == "accepted"}
+            if new_accepted == completed_ids:
+                break
+            completed_ids = new_accepted
         return self.status(run)
+
+    async def _run_task_lifecycle(self, r, plan, tid, task, allow_concurrent=False):
+        run = r["id"]
+        while True:
+            claimed = self.store.claim(run, tid, self.owner, task["wall_seconds"] + 360, allow_concurrent=allow_concurrent)
+            if not claimed:
+                break
+            attempt, fence = claimed
+            heartbeat = asyncio.create_task(self._heartbeat(run, tid, fence))
+            try:
+                await self._attempt(r, task, attempt, fence)
+            except asyncio.CancelledError:
+                self._settle_error(run, tid, fence, asyncio.CancelledError())
+                break
+            except Exception as e:
+                self._settle_error(run, tid, fence, e)
+                break
+            finally:
+                heartbeat.cancel()
+                await asyncio.gather(heartbeat, return_exceptions=True)
+            current = next(x for x in self.store.tasks(run) if x["id"] == tid)
+            if current["state"] != "rework":
+                break
+            if attempt > plan["max_rework_rounds"]:
+                self.store.transition(run, tid, "escalated", fence)
+                break
+            self.store.transition(run, tid, "queued", fence)
 
     async def _attempt(self, r, task, attempt, fence):
         run, tid = r["id"], task["id"]
@@ -189,9 +210,12 @@ class Scheduler:
                 raise OrchError("Source changed during snapshot copy")
         if digest(manifest(original)) != r["source_hash"]:
             raise OrchError("Original snapshot integrity mismatch")
-        # v1 is serialized. Start each task on all earlier accepted candidates.
+        # Start each task on all earlier accepted dependency candidates (or all accepted tasks when sequential).
         previous = original
-        for row in self.store.accepted_tasks(run):
+        accepted_rows = self.store.accepted_tasks(run)
+        dep_ids = set(task.get("dependencies", []))
+        base_rows = [row for row in accepted_rows if row["id"] in dep_ids] if dep_ids else accepted_rows
+        for row in base_rows:
             previous = root / row["id"] / str(row["attempt"]) / "candidate"
             self._check_accepted_hash(run, row, previous)
         base = root / tid / str(attempt) / "baseline"
@@ -229,6 +253,7 @@ class Scheduler:
             raise asyncio.CancelledError()
         provider_metadata = getattr(adapter, "last_metadata", None)
         usage_meta = provider_metadata.get("usage") if isinstance(provider_metadata, dict) and isinstance(provider_metadata.get("usage"), dict) else None
+        from .wire import encode_wire_message, translate_summary_to_zh
         normalized_result = normalize_worker_result(
             result,
             task["allowed_paths"],
@@ -247,7 +272,25 @@ class Scheduler:
         verification = await verify(candidate, cancelled=cancelled, profile=profile)
         changed, patch = diff(base, candidate)
         tree = manifest(candidate)
+        role_name = task.get("role") or "worker"
+        sub_reviewer_name = task.get("sub_reviewer")
+        normalized_result["extensions"]["role"] = role_name
+        normalized_result["extensions"]["sub_reviewer"] = sub_reviewer_name
+        normalized_result["extensions"]["wire_protocol"] = "AHCP-1"
+        normalized_result["extensions"]["wire_frame"] = encode_wire_message(
+            f"{task['provider']}:{role_name}",
+            sub_reviewer_name or self.brain_name,
+            "RESULT",
+            {"s": normalized_result["summary"][:160], "f": [f["path"] for f in normalized_result["files"]]},
+        )
+        normalized_result["extensions"]["summary_zh"] = translate_summary_to_zh(
+            normalized_result["summary"],
+            provider=task["provider"],
+            role=role_name,
+            passed=verification["passed"],
+        )
         evidence = {"task": task, "attempt": attempt, "provider": task["provider"], "brain": self.brain_name,
+                    "role": role_name, "sub_reviewer": sub_reviewer_name,
                     "verifier_contract": contract,
                     "worker_claim": result["summary"], "worker_result": normalized_result,
                     "provider_metadata": provider_metadata,
@@ -263,8 +306,18 @@ class Scheduler:
         if self.brain_name == "interactive":
             self.store.save_evidence(run, tid, attempt, evidence, {"decision": "pending", "candidate_hash": evidence["candidate_hash"]}, fence)
             return
-        review = validate_review(await self.brain.review(evidence, candidate, cancelled=cancelled), evidence)
-        if self.brain_name in ("codex", "qoder-cn"):
+        sub_review = None
+        if sub_reviewer_name and sub_reviewer_name in self.adapters and sub_reviewer_name != self.brain_name:
+            sub_adapter = self.adapters[sub_reviewer_name]
+            sub_brain = CodexBrain(sub_adapter) if (sub_reviewer_name != "mock" and getattr(sub_adapter, "enabled", False)) else MockBrain()
+            sub_review = validate_review(await sub_brain.review(evidence, candidate, cancelled=cancelled), evidence)
+            evidence["sub_review"] = {"reviewer": sub_reviewer_name, "review": sub_review}
+            normalized_result["extensions"]["sub_review"] = evidence["sub_review"]
+        if sub_review and sub_review["decision"] != "accept":
+            review = sub_review
+        else:
+            review = validate_review(await self.brain.review(evidence, candidate, cancelled=cancelled), evidence)
+        if self.brain_name in ("codex", "qoder-cn", "claude", "deepseek", "antigravity"):
             evidence["reviewer_metadata"] = self.brain_adapter.last_metadata
         if digest(manifest(candidate)) != evidence["candidate_hash"]:
             raise OrchError("Candidate changed during review")

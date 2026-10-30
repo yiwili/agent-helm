@@ -74,6 +74,8 @@ def parse_result(text, exit_code):
     else:
         result = parsed
         session_id = "antigravity-direct"
+    from ..wire import expand_wire_object
+    result = expand_wire_object(result)
     return result, {
         "provider": "antigravity",
         "session_id": session_id,
@@ -135,7 +137,10 @@ class AntigravityAdapter(CodexAdapter):
             argv += ["--reasoning-effort", self.reasoning_effort]
         if self.thinking:
             argv += ["--thinking", self.thinking]
-        message = prompt + "\nReturn only a JSON object, no Markdown fences. Match this JSON Schema:\n" + json.dumps(schema)
+        from ..schemas import RESULT_SCHEMA, REVIEW_SCHEMA
+        from ..wire import COMPACT_RESULT_SCHEMA, COMPACT_REVIEW_SCHEMA
+        wire_schema = COMPACT_RESULT_SCHEMA if schema == RESULT_SCHEMA else (COMPACT_REVIEW_SCHEMA if schema == REVIEW_SCHEMA else schema)
+        message = prompt + "\n[AHCP-1 Wire Protocol: Use compact English keys to save output tokens] Return only a JSON object, no Markdown fences. Match this JSON Schema:\n" + json.dumps(wire_schema, separators=(",", ":"))
         process = await self._run(argv, workspace, "exec", stdin=message, timeout=timeout, cancelled=cancelled, auth=True)
         if process.exit_code != 0 and blocked_error(process.stderr + "\n" + process.stdout):
             raise ProviderBlocked("Gemini / Antigravity CLI quota/permission/authentication error; no API fallback")

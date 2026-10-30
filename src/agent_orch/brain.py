@@ -61,7 +61,122 @@ class CodexBrain:
                   "Trusted verifier constraints: " + json.dumps(verifier_context(evidence["task"]["verifier_profile"])) +
                   "\nReturn JSON. Evidence:\n" + json.dumps(evidence, ensure_ascii=False))
         prompt += "\nIf tests fail on a simple in-scope repair and rework remains, choose rework and give concrete repair instructions. Never accept failed tests."
-        return validate_review(await self.adapter.call(prompt, REVIEW_SCHEMA, workspace, cancelled=cancelled), evidence)
+        raw = await self.adapter.call(prompt, REVIEW_SCHEMA, workspace, cancelled=cancelled)
+        from .wire import expand_wire_review
+        return validate_review(expand_wire_review(raw, evidence["candidate_hash"]), evidence)
+
+
+def decompose_or_passthrough_plan(
+    *,
+    goal: str,
+    leader: str = "mock",
+    mode: str = "direct",
+    primary_worker: str = "mock",
+    role_assignments: list[dict] | None = None,
+    sub_reviewer: str | None = None,
+    behavior: str = "good",
+) -> dict:
+    """Build either a Mode 1 (Direct Leader -> Worker -> Leader Review) or Mode 2 (Leader Decompose / Multi-Role DAG) plan.
+
+    Guarantees:
+    - Input prompt `goal` is NEVER truncated or simplified.
+    - In Mode 2 ('decompose'), evaluates whether `goal` + `role_assignments` can be cleanly decomposed.
+    - If not cleanly splittable (single atomic file target without distinct sub-goals or semicolon/numbered steps),
+      falls back to calling the primary upstream worker with the verbatim `goal` while explicitly recording the decomposition assessment.
+    """
+    clean_goal = goal.strip()
+    roles = [r for r in (role_assignments or []) if isinstance(r, dict) and r.get("provider")]
+    if mode != "decompose":
+        plan = fixture_plan(goal=clean_goal, provider=primary_worker, behavior=behavior)
+        plan["tasks"][0]["role"] = roles[0].get("role", "primary-worker") if roles else "primary-worker"
+        if sub_reviewer:
+            plan["tasks"][0]["sub_reviewer"] = sub_reviewer
+        plan["orchestration"] = {
+            "protocol": "AHCP-1",
+            "mode": "direct",
+            "leader": leader,
+            "splittable": False,
+            "decomposition_reason": "Mode 1 (Direct): Leader dispatches verbatim task to designated worker and reviews upon completion.",
+            "sub_reviewer": sub_reviewer,
+            "roles": [{"task_id": "fix-total", "role": plan["tasks"][0]["role"], "worker": primary_worker, "sub_reviewer": sub_reviewer}],
+        }
+        return validate_plan(plan)
+
+    # Mode 2: Check whether user provided explicit multi-step sub-goals (via ';', '；', numbered steps) or distinct role definitions
+    parts = [p.strip() for p in __import__("re").split(r"[;；\n]+", clean_goal) if p.strip()]
+    can_split = len(roles) >= 2 and len(parts) >= 2
+
+    if not can_split:
+        upstream_worker = roles[0]["provider"] if roles else primary_worker
+        upstream_role = roles[0].get("role", "upstream-specialist") if roles else "upstream-specialist"
+        plan = fixture_plan(goal=clean_goal, provider=upstream_worker, behavior=behavior)
+        plan["tasks"][0]["role"] = upstream_role
+        if sub_reviewer:
+            plan["tasks"][0]["sub_reviewer"] = sub_reviewer
+        reason = (
+            "Task targets a single atomic function (stats.py::total) without separable sub-goals; "
+            f"Leader bypassed decomposition and forwarded original prompt verbatim to upstream worker '{upstream_worker}' ({upstream_role})."
+        )
+        plan["orchestration"] = {
+            "protocol": "AHCP-1",
+            "mode": "decompose",
+            "leader": leader,
+            "splittable": False,
+            "decomposition_reason": reason,
+            "passthrough_verbatim": True,
+            "sub_reviewer": sub_reviewer,
+            "roles": [{"task_id": "fix-total", "role": upstream_role, "worker": upstream_worker, "sub_reviewer": sub_reviewer, "sub_goal": clean_goal}],
+        }
+        return validate_plan(plan)
+
+    # Cleanly splittable across multiple role workers
+    tasks = []
+    role_summary = []
+    count = min(len(roles), len(parts), 5)
+    for idx in range(count):
+        r_cfg = roles[idx]
+        w_prov = r_cfg["provider"]
+        r_name = (r_cfg.get("role") or f"role-{idx+1}").strip()[:64]
+        r_sub_rev = r_cfg.get("sub_reviewer") or sub_reviewer
+        tid = f"stage-{idx+1}-{__import__('re').sub(r'[^a-zA-Z0-9_-]', '', r_name)[:20] or idx+1}"
+        sub_goal = f"[Role: {r_name}] {parts[idx]} (Full context: {clean_goal})"
+        deps = [tasks[-1]["id"]] if (tasks and not r_cfg.get("parallel", False)) else []
+        task_item = {
+            "id": tid,
+            "goal": sub_goal,
+            "provider": w_prov,
+            "role": r_name,
+            "dependencies": deps,
+            "allowed_paths": ["stats.py"],
+            "acceptance": ["Empty list returns 0", "Positive, negative and decimal totals remain correct"],
+            "verifier_profile": "fixture-stats",
+            "wall_seconds": 120,
+            "milestone_review": False,
+            "mock_behavior": behavior if idx == 0 else "good",
+        }
+        if r_sub_rev:
+            task_item["sub_reviewer"] = r_sub_rev
+        tasks.append(task_item)
+        role_summary.append({"task_id": tid, "role": r_name, "worker": w_prov, "sub_reviewer": r_sub_rev, "sub_goal": sub_goal, "dependencies": deps})
+
+    plan = {
+        "schema_version": 1,
+        "goal": clean_goal,
+        "max_rework_rounds": 2,
+        "api_budget": 0,
+        "tasks": tasks,
+        "orchestration": {
+            "protocol": "AHCP-1",
+            "mode": "decompose",
+            "leader": leader,
+            "splittable": True,
+            "decomposition_reason": f"Leader decomposed task into {len(tasks)} role-specialized stages with AHCP-1 compact wire handoffs.",
+            "passthrough_verbatim": False,
+            "sub_reviewer": sub_reviewer,
+            "roles": role_summary,
+        },
+    }
+    return validate_plan(plan)
 
 
 def fixture_plan(goal="Fix empty list total", provider="mock", behavior="good"):

@@ -62,9 +62,11 @@ _RESULT_OPTIONAL_KEYS = (
 
 
 def validate_plan(plan):
-    strict(plan, ("schema_version", "goal", "tasks", "max_rework_rounds", "api_budget"))
+    strict(plan, ("schema_version", "goal", "tasks", "max_rework_rounds", "api_budget"), ("orchestration",))
     if type(plan["schema_version"]) is not int or plan["schema_version"] != 1 or not isinstance(plan["goal"], str) or not plan["goal"].strip():
         raise OrchError("Unsupported schema or empty goal")
+    if "orchestration" in plan and not isinstance(plan["orchestration"], dict):
+        raise OrchError("orchestration metadata must be an object")
     if type(plan["max_rework_rounds"]) is not int or not 0 <= plan["max_rework_rounds"] <= 2:
         raise OrchError("Rework limit must be 0..2")
     if type(plan["api_budget"]) not in (int, float) or plan["api_budget"] != 0:
@@ -73,9 +75,13 @@ def validate_plan(plan):
         raise OrchError("Plan requires 1..100 tasks")
     ids = set()
     for t in plan["tasks"]:
-        strict(t, ("id", "goal", "provider", "dependencies", "allowed_paths", "acceptance", "verifier_profile", "wall_seconds"), ("mock_behavior", "milestone_review"))
+        strict(t, ("id", "goal", "provider", "dependencies", "allowed_paths", "acceptance", "verifier_profile", "wall_seconds"), ("mock_behavior", "milestone_review", "role", "sub_reviewer"))
         if "milestone_review" in t and type(t["milestone_review"]) is not bool:
             raise OrchError("milestone_review must be boolean")
+        if "role" in t and (not isinstance(t["role"], str) or not 1 <= len(t["role"].strip()) <= 64):
+            raise OrchError("role must be a 1..64 character string")
+        if "sub_reviewer" in t and t["sub_reviewer"] is not None and t["sub_reviewer"] not in PROVIDERS:
+            raise OrchError("Unknown sub_reviewer provider")
         if not isinstance(t["id"], str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", t["id"]) or t["id"] in ids:
             raise OrchError("Duplicate or invalid task ID")
         ids.add(t["id"])
