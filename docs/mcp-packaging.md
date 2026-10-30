@@ -77,7 +77,7 @@ Linux/macOS：
 
 ## Windows / Linux / macOS 分别构建
 
-PyInstaller 按构建机系统及架构产出，不做跨系统编译。仓库的 **Actions → Native executable packages → Run workflow** 一次启动 Windows x64、Ubuntu x64、Intel Mac 和 Apple Silicon Mac 原生构建。每个 runner 独立运行默认测试、构建及打包产物的 MCP smoke，通过后上传 14 天有效的 Actions artifact。
+PyInstaller 按构建机系统及架构产出，不做跨系统编译。仓库的 **Actions → Native executable packages → Run workflow** 默认只验证 Windows。明确将 targets 选为 all，才启动 Windows x64、Ubuntu x64、Intel Mac 和 Apple Silicon Mac 原生构建。每个 runner 独立运行默认测试、构建及打包产物的 MCP smoke，通过后上传 14 天有效的 Actions artifact。当前按用户要求只推进 Windows 验收。
 
 当前本地可验证 Windows 与 WSL/Linux；Mac 由相应 runner 验证。macOS 开发者签名/公证、Windows 代码签名与安装向导未配置。Git 与各产品原生 CLI 由使用环境单独安装；它们及账号凭据不会被打入包。离线 Mock 流程不需要产品 CLI 或 Git（除非选择 Git 夹具）。
 

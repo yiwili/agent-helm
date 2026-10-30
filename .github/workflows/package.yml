@@ -1,6 +1,12 @@
 name: Native executable packages
 on:
   workflow_dispatch:
+    inputs:
+      targets:
+        description: 'Build Windows only, or explicitly opt in to all native platforms'
+        type: choice
+        options: [windows, all]
+        default: windows
   push:
     branches: [main]
     paths: ['src/**', 'scripts/**', 'tests/**', 'build*', 'pyproject.toml', '.github/workflows/package.yml']
@@ -11,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-22.04, macos-15-intel, macos-14]
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.targets == 'all' && '["windows-latest","ubuntu-22.04","macos-15-intel","macos-14"]' || '["windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
