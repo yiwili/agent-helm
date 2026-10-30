@@ -1,0 +1,77 @@
+name: Windows desktop development checks
+on:
+  workflow_dispatch:
+    inputs:
+      bundle:
+        description: 'Build a Windows installer without launching or validating it'
+        type: boolean
+        default: false
+  push:
+    branches: [main, 'codex/**']
+    paths: ['desktop/**', 'src/**', 'tests/**', 'scripts/build.py', '.github/workflows/desktop.yml']
+permissions:
+  contents: read
+jobs:
+  bundle:
+    if: github.event_name == 'workflow_dispatch' && inputs.bundle
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - name: Build Windows installer only (no artifact execution)
+        working-directory: desktop
+        env:
+          AGENT_HELM_DESKTOP_OUTPUT: '${{ runner.temp }}/agent-helm-desktop-package'
+          PYTHONDONTWRITEBYTECODE: '1'
+        shell: pwsh
+        run: |
+          rustup default stable
+          $env:AGENT_HELM_PYTHON = (Get-Command python.exe).Source
+          npm ci
+          npm run build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: agent-helm-desktop-windows-installer
+          path: '${{ runner.temp }}/agent-helm-desktop-package/cargo/release/bundle/nsis/*.exe'
+          if-no-files-found: error
+          retention-days: 14
+  check:
+    if: github.event_name != 'workflow_dispatch' || !inputs.bundle
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      PYTHONPATH: src
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - name: Offline core tests
+        run: python -m unittest discover -s tests -v
+      - name: Frontend checks and static build
+        working-directory: desktop
+        env:
+          AGENT_HELM_WEB_DIST: '${{ runner.temp }}/agent-helm-desktop/web'
+        run: |
+          npm ci
+          npm run check
+      - name: Native Rust development compilation (no bundle or application launch)
+        working-directory: desktop/src-tauri
+        env:
+          CARGO_TARGET_DIR: '${{ runner.temp }}/agent-helm-desktop/cargo'
+        shell: pwsh
+        run: |
+          rustup default stable
+          $web = Join-Path $env:RUNNER_TEMP 'agent-helm-desktop/web'
+          $env:TAURI_CONFIG = @{build=@{frontendDist=$web}} | ConvertTo-Json -Compress -Depth 4
+          cargo check --locked

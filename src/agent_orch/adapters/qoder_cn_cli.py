@@ -98,6 +98,8 @@ class QoderCNAdapter(CodexAdapter):
                 "--mcp-config", '{"mcpServers":{}}', "--permission-mode", "dont_ask",
                 "--no-session-persistence", "--max-model-request-retries", "0",
                 "--max-output-tokens", "8192", "-p", "-o", "json"]
+        if self.model:
+            argv += ["--model", self.model]
         message = prompt + "\nReturn only a JSON object, no Markdown fences. Match this JSON Schema:\n" + json.dumps(schema)
         process = await self._run(argv, workspace, "exec", stdin=message, timeout=timeout, cancelled=cancelled, auth=True)
         if process.exit_code != 0 and (blocked_error(process.stderr) or (not process.stdout.lstrip().startswith(("{", "[")) and blocked_error(process.stdout))):
@@ -105,4 +107,5 @@ class QoderCNAdapter(CodexAdapter):
         if process.exit_code != 0 and not process.stdout.strip():
             raise OrchError("Qoder CLI failed: "+redact(process.stderr))
         result, self.last_metadata = parse_result(process.stdout, process.exit_code)
+        self.last_metadata["requested_model"] = self.model
         return result

@@ -14,4 +14,7 @@ state.db*
 state/
 evidence/
 backups/
+node_modules/
+target/
+desktop/src-tauri/gen/
 *.local.json

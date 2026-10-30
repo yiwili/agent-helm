@@ -1,0 +1,6 @@
+{
+  "identifier": "main",
+  "description": "Local desktop window only; no shell, filesystem or remote access permissions",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

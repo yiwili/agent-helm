@@ -86,10 +86,19 @@ def parse_jsonl(text, exit_code):
                    "version": PINNED_VERSION, "protocol_trace": trace}
 
 
+def model_id(value):
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/+\-\[\],=]{0,199}", value) or value.startswith(("sk-", "ghp_", "github_pat_")):
+        raise OrchError("Invalid model identifier; enter a model ID, never a credential or command")
+    return value
+
+
 class CodexAdapter:
-    def __init__(self, *, enabled=False, executable=None, cancelled=lambda: False, process_observer=None, runner=None):
+    def __init__(self, *, enabled=False, executable=None, model=None, cancelled=lambda: False, process_observer=None, runner=None):
         self.enabled = enabled
         self.executable = executable or shutil.which("codex")
+        self.model = model_id(model)
         self.cancelled = cancelled
         self.last_metadata = None
         self.process_observer = process_observer
@@ -141,12 +150,15 @@ class CodexAdapter:
                     "-c", "forced_login_method=\"chatgpt\"", "-c", "features.multi_agent=false",
                     "-c", "mcp_servers={}", "--sandbox", "read-only", "--json", "--ephemeral",
                     "--skip-git-repo-check", "--color", "never", "--output-schema", str(schema_path), "-"]
+            if self.model:
+                argv[2:2] = ["--model", self.model]
             result = await self._run(argv, workspace, "exec", stdin=prompt, timeout=timeout, cancelled=cancelled, auth=True)
             if result.exit_code != 0:
                 if blocked_error(result.stderr + result.stdout):
                     raise ProviderBlocked("provider quota/permission/authentication error; no API fallback")
                 raise OrchError(f"Codex CLI exit {result.exit_code}: {redact(result.stderr)}")
             final, self.last_metadata = parse_jsonl(result.stdout, result.exit_code)
+            self.last_metadata["requested_model"] = self.model
             return final
 
     async def execute(self, task, workspace, attempt, cancelled):

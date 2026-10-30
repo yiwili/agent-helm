@@ -138,6 +138,7 @@ def parser():
     demo.add_argument("--real-codex", action="store_true", help="Explicitly run two ChatGPT-login CLI calls on generated synthetic data; never API fallback")
     demo.add_argument("--failure", choices=["bad", "timeout", "quota", "permission"])
     mcp = sub.add_parser("mcp", help="Local stdio MCP server; managed synthetic fixtures only; human approvals stay outside MCP")
+    sub.add_parser("desktop", help="Private Tauri desktop transport; not an MCP endpoint")
     mcp.add_argument("--brain", choices=["mock", "interactive", "codex", "qoder-cn"], default="mock")
     for provider in ("codex", "qoder-cn", "claude", "cursor"):
         mcp.add_argument("--enable-"+provider, action="store_true")
@@ -346,6 +347,13 @@ def main(argv=None):
                 return 2
             return frozen_fixture_check(arguments[1])
         args = parser().parse_args(arguments)
+        if args.command == "desktop":
+            from .desktop import serve_desktop
+            try:
+                return asyncio.run(serve_desktop(args.state_root))
+            except (Exception, asyncio.CancelledError, KeyboardInterrupt) as error:
+                print("Desktop core stopped: "+str(error)[:500], file=sys.stderr)
+                return 2
         if args.command == "mcp":
             from .mcp_server import serve
             runtime = {key: getattr(args, key) for key in ("brain", "enable_codex", "enable_qoder_cn", "enable_claude", "enable_cursor", "qoder_cn_bin", "claude_bin", "claude_budget_ledger", "cursor_cli_dir", "cursor_config_dir")}

@@ -7,9 +7,6 @@ on:
         type: choice
         options: [windows, all]
         default: windows
-  push:
-    branches: [main]
-    paths: ['src/**', 'scripts/**', 'tests/**', 'build*', 'pyproject.toml', '.github/workflows/package.yml']
 permissions:
   contents: read
 jobs:

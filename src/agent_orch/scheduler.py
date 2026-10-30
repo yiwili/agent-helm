@@ -22,12 +22,13 @@ from .workspace import apply_files, copy_snapshot, diff, manifest, change_detail
 
 
 class Scheduler:
-    def __init__(self, store, *, enable_codex=False, enable_qoder_cn=False, qoder_cn_bin=None, enable_cursor=False, cursor_cli_dir=None, cursor_config_dir=None, enable_claude=False, claude_bin=None, claude_budget_ledger=None, brain="mock", manual_result=None):
+    def __init__(self, store, *, enable_codex=False, enable_qoder_cn=False, qoder_cn_bin=None, enable_cursor=False, cursor_cli_dir=None, cursor_config_dir=None, enable_claude=False, claude_bin=None, claude_budget_ledger=None, brain="mock", manual_result=None, worker_models=None, codex_bin=None):
         self.store = store
-        self.codex = CodexAdapter(enabled=enable_codex)
-        self.qoder_cn = QoderCNAdapter(enabled=enable_qoder_cn, executable=qoder_cn_bin)
+        models = dict(worker_models or {})
+        self.codex = CodexAdapter(enabled=enable_codex, executable=codex_bin, model=models.get("codex"))
+        self.qoder_cn = QoderCNAdapter(enabled=enable_qoder_cn, executable=qoder_cn_bin, model=models.get("qoder-cn"))
         self.cursor = CursorAdapter(enabled=enable_cursor, package=cursor_cli_dir, config_dir=cursor_config_dir)
-        self.claude = ClaudeAdapter(enabled=enable_claude, executable=claude_bin, budget_ledger=claude_budget_ledger)
+        self.claude = ClaudeAdapter(enabled=enable_claude, executable=claude_bin, budget_ledger=claude_budget_ledger, model=models.get("claude"))
         self.adapters = {"mock": MockAdapter(), "manual": ManualAdapter(manual_result), "codex": self.codex, "qoder-cn": self.qoder_cn, "cursor": self.cursor, "claude": self.claude}
         self.brain_name = brain
         self.brain_adapter = self.adapters.get(brain)

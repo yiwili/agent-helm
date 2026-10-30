@@ -22,6 +22,7 @@ PIP = "25.3"
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, help="New external build directory; defaults to a unique temporary directory")
+    parser.add_argument("--build-only", action="store_true", help="Create an unverified onedir engine for a desktop bundle; do not launch, smoke-test or release it")
     args = parser.parse_args()
     root = args.output.resolve() if args.output else Path(tempfile.mkdtemp(prefix="agent-helm-build-"))
     if root.is_relative_to(REPOSITORY) or REPOSITORY.is_relative_to(root):
@@ -49,6 +50,9 @@ def main():
     with (root/"build.log").open("w", encoding="utf-8") as log:
         subprocess.run(command, cwd=root, stdout=log, stderr=subprocess.STDOUT, check=True)
     binary = root/"dist/agent-helm"/("agent-helm.exe" if os.name == "nt" else "agent-helm")
+    if args.build_only:
+        print(json.dumps({"executable": str(binary), "layout": "onedir", "verified": False, "purpose": "desktop bundle input"}))
+        return
     subprocess.run([sys.executable, str(REPOSITORY/"scripts/verify_mcp.py"), "--executable", str(binary), "--output", str(root/"verification")], check=True)
     print(json.dumps(package_artifact(root), indent=2))
 

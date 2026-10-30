@@ -108,6 +108,8 @@ class ClaudeAdapter(CodexAdapter):
                         "--disable-slash-commands", "--permission-mode", "dontAsk", "--permission-prompts", "none",
                         "--max-turns", "3", "--max-budget-usd", f"{budget.per_call:.2f}",
                         "--json-schema", json.dumps(schema), "-p", "--output-format", "json"]
+                if self.model:
+                    argv += ["--model", self.model]
                 process = await self._run(argv, workspace, "exec", stdin=prompt, timeout=timeout, cancelled=cancelled, auth=True)
                 state = "contract_rejected"
                 try:
@@ -116,6 +118,7 @@ class ClaudeAdapter(CodexAdapter):
                 except (ValueError, TypeError):
                     pass
                 value, self.last_metadata = parse_terminal(process.stdout, process.exit_code)
+                self.last_metadata["requested_model"] = self.model
                 state = "completed"
                 self.last_metadata["budget_reservation_id"] = token
                 return value
