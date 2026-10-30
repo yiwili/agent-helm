@@ -2,7 +2,7 @@
 
 订阅优先的本地、单用户 Agent 调度器，Python 3.11+，运行和测试均无第三方依赖。
 
-**v0.7.0 增加可供 AI 调用的 MCP 服务和原生可执行打包。** Windows 双击 `build.cmd`；Linux/macOS 执行 `./build.sh`，自动为当前环境生成带校验摘要的可执行包，并验收 MCP 流程。GitHub Actions 支持一次启动 Windows、Linux、Intel Mac 和 Apple Silicon Mac 构建。使用方式与客户端配置见 [MCP 与打包指南](docs/mcp-packaging.md)。
+**v0.7.0 增加可供 AI 调用的 MCP 服务和原生可执行打包。** Windows 双击 `build.cmd`，自动生成带校验摘要的可执行包，并验收 MCP 流程。当前按用户要求只推进 Windows，GitHub Actions 默认也只跑 Windows；其他平台保留 `build.sh` 和手动 all 构建入口。使用方式与客户端配置见 [MCP 与打包指南](docs/mcp-packaging.md)。
 
 当前交付是 **v0.7.0 本地单用户版本**：Mock / Manual / Codex CLI / Qoder CN CLI，以及需单独预算的 Claude CLI 下游 worker。包含 Git 基线、结构化规划与审查、诊断里程碑、返工反馈、SQLite 调度、审批、独立副本、可信验证器、候选哈希、取消恢复及校验备份。Codex 可以作为主脑或下游 worker；Claude 原生结构化输出已实测，原始候选重放验收通过，但故障返工链路未通过完整验收。Cursor 的可选代码保持默认关闭，当前不推进其验收。已在合成 Git 夹具上验证 Codex/Qoder 两个主脑与 worker 方向。尚未达到指导书全部 P1–P7 的生产验收标准；具体差距见 [能力记录](docs/capabilities.md)。
 

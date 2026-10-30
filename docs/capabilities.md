@@ -41,3 +41,5 @@ v0.6 接入阶段新增 16 项 Claude/预算离线测试，合计 129 项，当�
 v0.6.1 在新增预算授权后实测 Claude 原生响应；故障返工暴露 verifier 约束没有传给模型，新增上下文传递修复与 5 项测试，总计 134 项（Windows 133 通过/1 权限跳过，WSL 134 通过）。原始正确候选重放通过，完整故障返工未通过，预算停止后未再收费验证。CLI 估算费用合计约 0.111436 美元，预留 0.30 美元全部用完；实际账单未知。
 
 v0.7.0 新增 11 个本地 stdio MCP 工具、人工审批独立通道和 native onedir 打包。149 项默认测试：Windows 148 通过/1 权限跳过，WSL 149 通过。源码、Windows 可执行包、WSL/Linux 可执行包均通过真实 stdio 客户端的 Mock 全链路验证；官方 MCP Python SDK 1.26.0 验证 Windows 包的握手、工具发现与夹具调用。四平台 GitHub Actions 构建入口已配置，Mac 验收以对应 CI 结果为准。没有新增真实模型调用。详见 [MCP 与打包指南](mcp-packaging.md)。
+
+按最新用户范围，交付与后续自动验证只推进 Windows。Windows ZIP 解压到新目录后，在应用 PATH 中移除 Python、移除源码导入环境，仍通过握手、审批拦截、Mock 返工、证据、幂等集成与 EOF 清理。Windows-only [云端 CI](https://github.com/yiwili/agent-helm/actions/runs/40991215726) 的离线测试、原生打包及可执行包 MCP smoke 全部通过。宿主路径别名测试已使用规范化路径比较，兼容 Windows runner 短路径。其他平台构建保留为显式 all 选项，暂不继续验收。
