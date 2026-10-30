@@ -1,4 +1,4 @@
-# Agent Helm
+# Agent Helm （本项目全权由 AI 开发）
 
 订阅优先的本地、单用户 Agent 调度器，Python 3.11+，运行和测试均无第三方依赖。
 
