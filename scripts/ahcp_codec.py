@@ -51,7 +51,9 @@ def main(argv=None) -> int:
     if args.cmd == "expand-result":
         base = parse_ahcp_text(raw) if not raw.lstrip().startswith("{") else expand_wire_result(json.loads(raw))
         envelope = normalize_worker_result(base, args.allowed, provider=args.provider, attempt=1)
-        envelope["summary_zh"] = translate_summary_to_zh(envelope["summary"], provider=args.provider, role=args.role, passed=True)
+        envelope["extensions"]["wire_protocol"] = "AHCP-1"
+        envelope["extensions"]["wire_language"] = "en"
+        envelope["extensions"]["role"] = args.role
         print(json.dumps(envelope, ensure_ascii=False, indent=2))
         return 0
 

@@ -246,9 +246,15 @@ function details() {
         <div class="probe-badges">
           <span class="pill info">${e(zh.orchestration_mode_zh)}</span>
           <span class="pill ${zh.final_state === "accepted" ? "success" : "warn"}">${e(zh.final_state_zh)}</span>
-          <span class="pill">通信协议: ${e(zh.protocol)}</span>
+          <span class="pill">Agent 间语言: ${e(zh.inter_agent_language || "en")} (${e(zh.protocol)})</span>
+          <span class="pill info">最终 Leader 语言: ${e(zh.final_leader_language || "zh-CN")}</span>
         </div>
-        <p style="margin:6px 0;color:#1d1d1f"><strong>Leader 拆解与调度说明：</strong>${e(zh.decomposition_explanation_zh)}</p>
+        <p style="margin:6px 0;color:#1d1d1f"><strong>Leader 最终中文拆解与调度说明：</strong>${e(zh.decomposition_explanation_zh)}</p>
+        ${
+          zh.leader_final_response_zh
+            ? `<pre style="margin:8px 0;padding:10px 12px;background:#fff;border-radius:10px;border:1px solid rgba(0,113,227,0.15);white-space:pre-wrap;font-size:12.5px;color:#1d1d1f">${e(zh.leader_final_response_zh)}</pre>`
+            : ""
+        }
         ${
           zh.tasks_zh?.length
             ? `<div style="display:grid;gap:6px;margin-top:8px">${zh.tasks_zh
@@ -256,7 +262,8 @@ function details() {
                   (t: any) =>
                     `<div style="font-size:12.5px;padding:8px 12px;background:#fff;border-radius:10px;border:1px solid rgba(0,0,0,0.06)">
                       <strong>节点 ${e(t.task_id)}</strong> · 角色: <code>${e(t.role)}</code> · 执行器: <code>${e(t.worker)}</code>${t.sub_reviewer ? ` · 次级审查: <code>${e(t.sub_reviewer)}</code>` : ""} · 尝试 ${e(t.attempt_count)} 次 · Leader 裁决: <strong>${e(t.leader_decision_zh)}</strong><br>
-                      <span style="color:#48484a">${e(t.summary_zh)}</span>
+                      <span style="color:#6e6e73">Worker 英文返回 (EN): <code>${e(t.worker_return_en || "-")}</code></span><br>
+                      <span style="color:#1d1d1f"><strong>Leader 最终中文结论 (ZH):</strong> ${e(t.leader_summary_zh || t.summary_zh || "")}</span>
                     </div>`,
                 )
                 .join("")}</div>`
@@ -284,14 +291,45 @@ function details() {
                   .filter(Boolean)
                   .join(" · ")
               : "";
-            const zhSummary = wr?.extensions?.summary_zh;
             const wireFrame = wr?.extensions?.wire_frame;
-            return `<section class="attempt-box"><div class="section-head"><p class="attempt-title">第 ${e(a.attempt)} 次尝试 · <strong>${e(stateLabel(a.state))}</strong></p><div class="evidence-gates"><span class="pill ${a.verification_passed ? "success" : "warn"}">独立测试 ${a.verification_passed ? "通过" : "未通过"}</span><span class="pill ${a.scope_ok ? "success" : "warn"}">修改范围 ${a.scope_ok ? "受控" : "越界"}</span>${wr?.protocol ? `<span class="pill info">${e(wr.protocol)}</span>` : ""}</div></div>${thinkingInfo ? `<p class="thinking-meta">${e(thinkingInfo)}</p>` : ""}${zhSummary ? `<p class="worker-summary"><strong>中文总结：</strong>${e(zhSummary)}</p>` : wr?.summary ? `<p class="worker-summary"><strong>Worker 摘要：</strong>${e(wr.summary)}</p>` : ""}${wireFrame ? `<small style="display:block;margin-bottom:6px;color:#0071e3">AHCP-1 通信帧：<code>${e(wireFrame)}</code></small>` : ""}<pre>${e(a.diff || "尚无候选差异")}</pre><small>候选快照哈希 (SHA-256)：${e(a.candidate_hash || "尚未生成")}</small></section>`;
+            const hops: any[] = a.agent_hops || wr?.extensions?.agent_hops || [];
+            const hopsHtml = hops.length
+              ? `<div class="agent-hops-panel">
+                  <p class="hops-title">Agent 间交互流转 · 返回内容与思考状态轨迹（Agent 间严格英文通信，仅最终 Leader 输出中文）</p>
+                  <div class="hops-list">
+                    ${hops
+                      .map((h: any) => {
+                        const isZh = h.language === "zh-CN";
+                        const ts = h.thinking_state || {};
+                        return `<div class="hop-card ${isZh ? "hop-final-zh" : "hop-en"}">
+                          <div class="hop-header">
+                            <span class="hop-step">Step ${e(h.step)}</span>
+                            <strong class="hop-route">${e(h.from_agent)} ➔ ${e(h.to_agent)}</strong>
+                            <span class="pill ${isZh ? "info" : ""}">${isZh ? "ZH-CN · Leader 最终中文返回" : "EN · Agent 间英文返回"}</span>
+                            <span class="pill success">🧠 ${e(ts.badge || "思考完成")}</span>
+                          </div>
+                          <div class="hop-thinking">
+                            <strong>思考状态 (Thinking State)：</strong>
+                            <span>模型: <code>${e(ts.model || "-")}</code> · 思考强度: <code>${e(ts.reasoning_effort || "standard")}</code> · 上下文: <code>${e(ts.context_window || "default")}</code></span>
+                            <div class="hop-thought-text">${e(ts.thought || "")}</div>
+                          </div>
+                          <div class="hop-return">
+                            <strong>${isZh ? "Leader 最终返回内容 (中文)：" : "Agent 间返回内容 (English)："}</strong>
+                            <div class="hop-return-body">${e(h.return_content || "")}</div>
+                            ${h.wire_frame ? `<small class="hop-wire">AHCP-1 Wire Frame: <code>${e(h.wire_frame)}</code></small>` : ""}
+                          </div>
+                        </div>`;
+                      })
+                      .join("")}
+                  </div>
+                </div>`
+              : "";
+            return `<section class="attempt-box"><div class="section-head"><p class="attempt-title">第 ${e(a.attempt)} 次尝试 · <strong>${e(stateLabel(a.state))}</strong></p><div class="evidence-gates"><span class="pill ${a.verification_passed ? "success" : "warn"}">独立测试 ${a.verification_passed ? "通过" : "未通过"}</span><span class="pill ${a.scope_ok ? "success" : "warn"}">修改范围 ${a.scope_ok ? "受控" : "越界"}</span>${wr?.protocol ? `<span class="pill info">${e(wr.protocol)}</span>` : ""}</div></div>${thinkingInfo ? `<p class="thinking-meta">${e(thinkingInfo)}</p>` : ""}${wr?.summary ? `<p class="worker-summary"><strong>Worker 英文返回摘要 (EN)：</strong>${e(wr.summary)}</p>` : ""}${wireFrame ? `<small style="display:block;margin-bottom:8px;color:#0071e3">Worker AHCP-1 英文通信帧：<code>${e(wireFrame)}</code></small>` : ""}${hopsHtml}<pre>${e(a.diff || "尚无候选差异")}</pre><small>候选快照哈希 (SHA-256)：${e(a.candidate_hash || "尚未生成")}</small></section>`;
           })
           .join("")}</article>`,
     )
     .join("");
-  return `<section class="panel" id="detail"><div class="section-head"><div><h2>执行证据链与中文结项报告 · ${e(stateLabel(s.state))}</h2><p>内部通信采用英文 AHCP-1 紧凑协议节省 Token，最终结项内容统一以中文呈现。</p></div>${button("刷新证据", "detail", `data-id="${e(s.run_id || s.id)}"`)}</div>${zhBanner}${evidence || "<p>等待执行器生成候选和验证证据...</p>"}<details><summary>展开完整协议包与审查记录 (JSON)</summary><pre>${json({ chinese_report: detail.chinese_report, tasks: s.tasks, events: detail.events, evidence: detail.evidence })}</pre></details><div class="actions">${button("请求取消", "cancel", `data-id="${e(s.run_id || s.id)}"`)}${s.state === "queued" ? button("确认继续返工", "resume", `data-id="${e(s.run_id || s.id)}" class="btn-primary"`) : ""}${s.state === "accepted" ? button("集成到独立验收目录", "integrate", `data-id="${e(s.run_id || s.id)}" class="btn-primary"`) : ""}</div>${
+  return `<section class="panel" id="detail"><div class="section-head"><div><h2>执行证据链、Agent 间思考流转与 Leader 最终中文报告 · ${e(stateLabel(s.state))}</h2><p>各 Agent 之间返回内容严格使用英文 AHCP-1 紧凑协议（含每个节点的思考状态与返回载荷），最终仅由 Leader 返回中文总结。</p></div>${button("刷新证据", "detail", `data-id="${e(s.run_id || s.id)}"`)}</div>${zhBanner}${evidence || "<p>等待执行器生成候选和验证证据...</p>"}<details><summary>展开完整协议包与审查记录 (JSON)</summary><pre>${json({ chinese_report: detail.chinese_report, tasks: s.tasks, events: detail.events, evidence: detail.evidence })}</pre></details><div class="actions">${button("请求取消", "cancel", `data-id="${e(s.run_id || s.id)}"`)}${s.state === "queued" ? button("确认继续返工", "resume", `data-id="${e(s.run_id || s.id)}" class="btn-primary"`) : ""}${s.state === "accepted" ? button("集成到独立验收目录", "integrate", `data-id="${e(s.run_id || s.id)}" class="btn-primary"`) : ""}</div>${
     s.state === "reviewing"
       ? detail.evidence
           .map((ev: any, i: number) => {

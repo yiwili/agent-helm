@@ -248,10 +248,10 @@ def encode_wire_message(sender: str, receiver: str, action: str, payload: dict[s
 
 
 def translate_summary_to_zh(summary_en: str, *, provider: str = "", role: str = "", passed: bool = True) -> str:
-    """Render a Chinese user-facing summary from an English worker/leader technical summary without extra LLM token calls."""
+    """Used by the Leader to synthesize a Chinese final conclusion from an English worker/reviewer technical summary."""
     text = (summary_en or "").strip()
-    role_prefix = f"【角色：{role} / 执行器：{provider}】" if role and provider else (f"【执行器：{provider}】" if provider else "")
-    status_tag = "验证通过" if passed else "待返工修正"
+    role_prefix = f"【子角色：{role} / 执行器：{provider}】" if role and provider else (f"【执行器：{provider}】" if provider else "")
+    status_tag = "独立测试通过" if passed else "待返工修正"
     translations = [
         ("empty-list fallback", "空列表兜底返回值"),
         ("empty list", "空列表"),
@@ -271,8 +271,266 @@ def translate_summary_to_zh(summary_en: str, *, provider: str = "", role: str = 
     for en_phrase, zh_phrase in translations:
         zh_hint = zh_hint.replace(en_phrase, zh_phrase)
     if zh_hint != text:
-        return f"{role_prefix}（{status_tag}）中文结论：{zh_hint}（原始英文摘要：{text}）"
-    return f"{role_prefix}（{status_tag}）已完成本节点代码修改并提交候选快照（英文技术摘要：{text}）"
+        return f"{role_prefix}（{status_tag}）Leader 汇总中文结论：{zh_hint}"
+    return f"{role_prefix}（{status_tag}）Leader 已核验该节点提交的代码变更与测试证据（对应 Worker 英文汇报：{text}）"
+
+
+def build_agent_hops(
+    *,
+    leader: str,
+    worker: str,
+    role: str,
+    sub_reviewer: str | None,
+    attempt: int,
+    goal: str,
+    allowed_paths: list[str],
+    worker_result: dict[str, Any] | None,
+    verification_passed: bool,
+    scope_ok: bool,
+    candidate_hash: str,
+    sub_review: dict[str, Any] | None = None,
+    leader_review: dict[str, Any] | None = None,
+    rework_context: dict[str, Any] | None = None,
+    leader_thinking: dict[str, Any] | None = None,
+    sub_reviewer_thinking: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Build the step-by-step inter-agent communication & thinking trace for an attempt.
+
+    Contract:
+    - All inter-agent returns (Leader -> Worker, Worker -> Sub-Reviewer/Leader, Sub-Reviewer -> Leader, Leader -> Worker Rework)
+      are strictly in English ('language': 'en').
+    - Only the final Leader conclusion to the user ('stage': 'leader_final_zh') is in Chinese ('language': 'zh-CN').
+    - Every hop exposes both `thinking_state` (思考状态) and `return_content` (返回的内容).
+    """
+    hops: list[dict[str, Any]] = []
+    l_think = leader_thinking or {}
+    l_effort = l_think.get("reasoning_effort") or "high"
+    l_ctx = l_think.get("context_window") or "default"
+    l_model = l_think.get("model") or leader
+
+    # Hop 1: Leader -> Worker (Dispatch or Rework Dispatch in English)
+    if attempt > 1 and isinstance(rework_context, dict):
+        prev_reasons = (rework_context.get("review") or {}).get("reasons") or ["Fix failing verification checks"]
+        dispatch_payload = {
+            "act": "REWORK",
+            "att": attempt,
+            "rl": role,
+            "ap": allowed_paths,
+            "prev_h": str(rework_context.get("previous_candidate_hash") or "")[:16],
+            "fix": prev_reasons,
+        }
+        dispatch_en = f"Rework Round #{attempt} for role '{role}': {'; '.join(str(r) for r in prev_reasons)} | Full prompt preserved."
+        dispatch_thought = (
+            f"Leader ({leader}) analyzed Attempt #{attempt - 1} rejection & verifier failure, "
+            f"kept original task prompt intact, and attached English rework directives for Worker '{worker}'."
+        )
+    else:
+        dispatch_payload = {
+            "act": "DISPATCH",
+            "att": attempt,
+            "rl": role,
+            "ap": allowed_paths,
+            "verbatim_prompt": True,
+        }
+        dispatch_en = f"Dispatch to role '{role}' ({worker}): Execute full task prompt within allowed scope {allowed_paths} and return compact AHCP-1 English result."
+        dispatch_thought = (
+            f"Leader ({leader}) assessed task splittability & scope boundaries ({', '.join(allowed_paths)}), "
+            f"assigned role '{role}' to '{worker}', and forwarded the complete task prompt without truncation."
+        )
+
+    hops.append(
+        {
+            "step": len(hops) + 1,
+            "stage": "leader_dispatch",
+            "from_agent": f"Leader ({leader})",
+            "to_agent": f"Worker [{role}] ({worker})",
+            "language": "en",
+            "thinking_state": {
+                "agent": leader,
+                "role": "leader",
+                "model": l_model,
+                "context_window": l_ctx,
+                "reasoning_effort": l_effort,
+                "status": "completed",
+                "badge": f"思考完成 · Leader 调度推理 ({l_effort})",
+                "thought": dispatch_thought,
+            },
+            "wire_frame": encode_wire_message(f"leader:{leader}", f"worker:{worker}:{role}", "DISPATCH", dispatch_payload),
+            "compact_payload": dispatch_payload,
+            "return_content": dispatch_en,
+        }
+    )
+
+    # Hop 2: Worker -> Sub-Reviewer or Leader (Worker Return in English ONLY)
+    if isinstance(worker_result, dict):
+        w_think = worker_result.get("thinking") if isinstance(worker_result.get("thinking"), dict) else {}
+        w_model = w_think.get("model") or worker
+        w_ctx = w_think.get("context_window") or "default"
+        w_effort = w_think.get("reasoning_effort") or w_think.get("thinking") or "standard"
+        summary_en = str(worker_result.get("summary") or "Completed candidate modification")
+        files_list = worker_result.get("files") if isinstance(worker_result.get("files"), list) else []
+        compact_worker_obj = {
+            "s": summary_en,
+            "f": [{"p": f.get("path", ""), "c": f"<{len(str(f.get('content', '')))} chars>"} for f in files_list],
+        }
+        receiver_label = f"Sub-Reviewer ({sub_reviewer})" if sub_reviewer else f"Leader ({leader})"
+        receiver_wire = f"sub_reviewer:{sub_reviewer}" if sub_reviewer else f"leader:{leader}"
+        hops.append(
+            {
+                "step": len(hops) + 1,
+                "stage": "worker_return",
+                "from_agent": f"Worker [{role}] ({worker})",
+                "to_agent": receiver_label,
+                "language": "en",
+                "thinking_state": {
+                    "agent": worker,
+                    "role": role,
+                    "model": w_model,
+                    "context_window": w_ctx,
+                    "reasoning_effort": w_effort,
+                    "status": "completed",
+                    "badge": f"思考完成 · 模型 {w_model} · 思考强度 {w_effort}" + (f" · 窗口 {w_ctx}" if w_ctx != "default" else ""),
+                    "thought": (
+                        f"Worker '{worker}' (role: {role}) analyzed baseline failure in {', '.join(allowed_paths)}, "
+                        f"generated candidate patch (SHA-256: {(candidate_hash or '')[:12]}...), and returned compact English AHCP-1 payload."
+                    ),
+                },
+                "wire_frame": encode_wire_message(
+                    f"worker:{worker}:{role}",
+                    receiver_wire,
+                    "RESULT",
+                    {"s": summary_en[:160], "f": [f.get("path", "") for f in files_list]},
+                ),
+                "compact_payload": compact_worker_obj,
+                "return_content": f"[EN Return] Summary: {summary_en} | Modified files: {', '.join(f.get('path', '') for f in files_list) or 'none'}",
+            }
+        )
+
+    # Hop 3 (Optional): Sub-Reviewer -> Leader (Sub-Review Return in English ONLY)
+    if sub_reviewer and isinstance(sub_review, dict):
+        sr_body = sub_review.get("review") if isinstance(sub_review.get("review"), dict) else sub_review
+        sr_decision = str(sr_body.get("decision") or "accept")
+        sr_code = {"accept": "A", "rework": "R", "escalate": "E"}.get(sr_decision, "A")
+        sr_reasons = sr_body.get("reasons") if isinstance(sr_body.get("reasons"), list) else ["Reviewed candidate"]
+        sr_think = sub_reviewer_thinking or {}
+        sr_model = sr_think.get("model") or sub_reviewer
+        sr_effort = sr_think.get("reasoning_effort") or "high"
+        sr_compact = {
+            "d": sr_code,
+            "h": (candidate_hash or "")[:16],
+            "r": sr_reasons,
+            "e": ["D", "V", "B", "S"],
+        }
+        hops.append(
+            {
+                "step": len(hops) + 1,
+                "stage": "sub_review_return",
+                "from_agent": f"Sub-Reviewer ({sub_reviewer})",
+                "to_agent": f"Leader ({leader})",
+                "language": "en",
+                "thinking_state": {
+                    "agent": sub_reviewer,
+                    "role": "sub-reviewer",
+                    "model": sr_model,
+                    "context_window": sr_think.get("context_window") or "default",
+                    "reasoning_effort": sr_effort,
+                    "status": "completed",
+                    "badge": f"思考完成 · 次级审查推理 ({sr_effort})",
+                    "thought": (
+                        f"Sub-Reviewer '{sub_reviewer}' audited candidate diff & verifier result "
+                        f"(passed={verification_passed}, scope_ok={scope_ok}) and forwarded English review decision '{sr_decision}' to Leader."
+                    ),
+                },
+                "wire_frame": encode_wire_message(f"sub_reviewer:{sub_reviewer}", f"leader:{leader}", "SUB_REV", sr_compact),
+                "compact_payload": sr_compact,
+                "return_content": f"[EN Sub-Review] Decision={sr_decision.upper()} ({sr_code}) | Reasons: {'; '.join(str(x) for x in sr_reasons)}",
+            }
+        )
+
+    # Hop 4: Leader Review & Final Output
+    if isinstance(leader_review, dict) and leader_review.get("decision") and leader_review.get("decision") != "pending":
+        l_decision = str(leader_review.get("decision"))
+        l_code = {"accept": "A", "rework": "R", "escalate": "E"}.get(l_decision, "A")
+        l_reasons_en = leader_review.get("reasons") if isinstance(leader_review.get("reasons"), list) else ["Reviewed by leader"]
+        l_compact = {
+            "d": l_code,
+            "h": (candidate_hash or "")[:16],
+            "r": l_reasons_en,
+            "e": ["D", "V", "B", "S"],
+        }
+        # If rejected (rework), Leader sends an English inter-agent rework notice back to Worker
+        if l_decision == "rework":
+            hops.append(
+                {
+                    "step": len(hops) + 1,
+                    "stage": "leader_rework_notice",
+                    "from_agent": f"Leader ({leader})",
+                    "to_agent": f"Worker [{role}] ({worker})",
+                    "language": "en",
+                    "thinking_state": {
+                        "agent": leader,
+                        "role": "leader",
+                        "model": l_model,
+                        "context_window": l_ctx,
+                        "reasoning_effort": l_effort,
+                        "status": "completed",
+                        "badge": f"思考完成 · Leader 退回返工裁决 ({l_effort})",
+                        "thought": (
+                            f"Leader '{leader}' detected failed verification or policy violation "
+                            f"(verification_passed={verification_passed}, scope_ok={scope_ok}) and issued English rework notice to Worker '{worker}'."
+                        ),
+                    },
+                    "wire_frame": encode_wire_message(f"leader:{leader}", f"worker:{worker}:{role}", "REWORK", l_compact),
+                    "compact_payload": l_compact,
+                    "return_content": f"[EN Rework Notice to Worker] Decision=REWORK (R) | Instructions: {'; '.join(str(x) for x in l_reasons_en)}",
+                }
+            )
+
+        # Final Hop: Leader -> User (Chinese Final Response!)
+        w_summary_en = str((worker_result or {}).get("summary") or "")
+        zh_conclusion = translate_summary_to_zh(
+            w_summary_en,
+            provider=worker,
+            role=role,
+            passed=(l_decision == "accept" and verification_passed),
+        )
+        decision_zh_label = {
+            "accept": "审查通过（Accept）· 准予结项",
+            "rework": "审查拒绝（Rework）· 已通知 Worker 返工修正",
+            "escalate": "升级人工处理（Escalate）",
+        }.get(l_decision, l_decision)
+        leader_final_zh_text = (
+            f"【Leader ({leader}) 最终中文审查结论】裁决结果：{decision_zh_label}。"
+            f"{zh_conclusion}；独立沙箱验证：{'通过' if verification_passed else '未通过'}，"
+            f"文件受控范围：{'合规' if scope_ok else '越界'}。"
+        )
+        hops.append(
+            {
+                "step": len(hops) + 1,
+                "stage": "leader_final_zh",
+                "from_agent": f"Leader ({leader})",
+                "to_agent": "最终交付 (User · 中文输出)",
+                "language": "zh-CN",
+                "thinking_state": {
+                    "agent": leader,
+                    "role": "leader",
+                    "model": l_model,
+                    "context_window": l_ctx,
+                    "reasoning_effort": l_effort,
+                    "status": "completed",
+                    "badge": f"思考完成 · Leader 终审与中文汇总 ({l_effort})",
+                    "thought": (
+                        f"Leader ({leader}) 综合核验了 Worker 英文返回载荷、候选快照哈希 ({(candidate_hash or '')[:12]}...)、"
+                        f"独立验收测试结果与文件权限边界，生成最终面向用户的中文审查与交付报告。"
+                    ),
+                },
+                "wire_frame": encode_wire_message(f"leader:{leader}", "user:final_zh", "FINAL_ZH", l_compact),
+                "compact_payload": l_compact,
+                "return_content": leader_final_zh_text,
+            }
+        )
+
+    return hops
 
 
 def build_chinese_orchestration_report(
@@ -286,16 +544,17 @@ def build_chinese_orchestration_report(
     reviews_by_task: dict[str, list[dict[str, Any]]],
     final_state: str,
 ) -> dict[str, Any]:
-    """Generate a comprehensive Chinese final report for the frontend / caller."""
+    """Generate the Leader's final Chinese report for the user while keeping inter-agent records in English."""
     mode_label = "模式二：Leader 拆解与多角色协同编排" if mode == "decompose" else "模式一：Leader 直派单 Worker 闭环"
     if mode == "decompose" and not splittable:
-        split_desc = f"经 Leader ({leader}) 评估，当前任务为强耦合原子修改，不适合强行拆分，已直接原话召唤上游主力 Worker 执行（原因：{decomposition_reason}）。"
+        split_desc = f"经 Leader ({leader}) 评估，当前任务为强耦合原子修改，不适合强行拆分，已直接将原始提示词透传给上游主力 Worker 执行（英文评估依据：{decomposition_reason}）。"
     elif mode == "decompose":
-        split_desc = f"Leader ({leader}) 已将任务拆解为 {len(tasks)} 个子角色节点并按依赖图派发（拆解依据：{decomposition_reason}）。"
+        split_desc = f"Leader ({leader}) 已将任务拆解为 {len(tasks)} 个子角色节点并按依赖波次并发/顺序派发（英文拆解依据：{decomposition_reason}）。"
     else:
-        split_desc = f"Leader ({leader}) 直接将任务派发给下游 Worker 执行，并在完成后执行独立测试与 Leader 终审。"
+        split_desc = f"Leader ({leader}) 直接将完整任务派发给指定 Worker 执行，并在完成后执行独立测试与 Leader 终审。"
 
     task_reports = []
+    leader_final_sections = []
     for t in tasks:
         tid = t["id"]
         role = t.get("role") or "worker"
@@ -310,6 +569,8 @@ def build_chinese_orchestration_report(
         last_review = reviews[-1] if reviews else {}
         decision = last_review.get("decision", "pending")
         decision_zh = {"accept": "通过 (Accept)", "rework": "打回返工 (Rework)", "escalate": "升级处理 (Escalate)"}.get(decision, "待裁决")
+        leader_zh_item = translate_summary_to_zh(summary_en, provider=provider, role=role, passed=passed)
+        leader_final_sections.append(f"节点 {tid}（{role} -> {provider}）：{leader_zh_item}，Leader 终审：{decision_zh}。")
         task_reports.append(
             {
                 "task_id": tid,
@@ -320,14 +581,25 @@ def build_chinese_orchestration_report(
                 "dependencies": t.get("dependencies", []),
                 "attempt_count": len(attempts),
                 "verification_passed": passed,
+                "worker_return_en": summary_en,
                 "leader_decision_zh": decision_zh,
-                "summary_zh": translate_summary_to_zh(summary_en, provider=provider, role=role, passed=passed),
+                "leader_summary_zh": leader_zh_item,
                 "wire_protocol": WIRE_PROTOCOL_ID,
             }
         )
 
+    leader_final_response_zh = (
+        f"【Leader ({leader}) 最终中文结项报告】\n"
+        f"1. 编排模式：{mode_label}（内部通信协议：{WIRE_PROTOCOL_ID} 英文极简帧，最终由 Leader 统一输出中文）。\n"
+        f"2. 拆解与派发判定：{split_desc}\n"
+        f"3. 各角色执行与终审汇总：{' '.join(leader_final_sections)}\n"
+        f"4. 最终运行状态：{_STATUS_ZH.get(final_state, final_state)}。"
+    )
+
     return {
         "protocol": WIRE_PROTOCOL_ID,
+        "inter_agent_language": "en",
+        "final_leader_language": "zh-CN",
         "language": "zh-CN",
         "orchestration_mode": mode,
         "orchestration_mode_zh": mode_label,
@@ -336,5 +608,6 @@ def build_chinese_orchestration_report(
         "decomposition_explanation_zh": split_desc,
         "final_state": final_state,
         "final_state_zh": _STATUS_ZH.get(final_state, final_state),
+        "leader_final_response_zh": leader_final_response_zh,
         "tasks_zh": task_reports,
     }

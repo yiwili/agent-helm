@@ -253,7 +253,7 @@ class Scheduler:
             raise asyncio.CancelledError()
         provider_metadata = getattr(adapter, "last_metadata", None)
         usage_meta = provider_metadata.get("usage") if isinstance(provider_metadata, dict) and isinstance(provider_metadata.get("usage"), dict) else None
-        from .wire import encode_wire_message, translate_summary_to_zh
+        from .wire import build_agent_hops, encode_wire_message
         normalized_result = normalize_worker_result(
             result,
             task["allowed_paths"],
@@ -272,32 +272,52 @@ class Scheduler:
         verification = await verify(candidate, cancelled=cancelled, profile=profile)
         changed, patch = diff(base, candidate)
         tree = manifest(candidate)
+        candidate_hash_val = digest(tree)
+        scope_ok_val = set(changed) <= set(task["allowed_paths"])
         role_name = task.get("role") or "worker"
         sub_reviewer_name = task.get("sub_reviewer")
         normalized_result["extensions"]["role"] = role_name
         normalized_result["extensions"]["sub_reviewer"] = sub_reviewer_name
         normalized_result["extensions"]["wire_protocol"] = "AHCP-1"
+        normalized_result["extensions"]["wire_language"] = "en"
         normalized_result["extensions"]["wire_frame"] = encode_wire_message(
             f"{task['provider']}:{role_name}",
             sub_reviewer_name or self.brain_name,
             "RESULT",
             {"s": normalized_result["summary"][:160], "f": [f["path"] for f in normalized_result["files"]]},
         )
-        normalized_result["extensions"]["summary_zh"] = translate_summary_to_zh(
-            normalized_result["summary"],
-            provider=task["provider"],
+        leader_thinking_meta = {
+            "model": getattr(self.brain_adapter, "model", None),
+            "reasoning_effort": getattr(self.brain_adapter, "reasoning_effort", None),
+            "thinking": getattr(self.brain_adapter, "thinking", None),
+            "context_window": getattr(self.brain_adapter, "context_window_raw", None) or getattr(self.brain_adapter, "context_window", None),
+        } if self.brain_adapter else None
+        initial_hops = build_agent_hops(
+            leader=self.brain_name,
+            worker=task["provider"],
             role=role_name,
-            passed=verification["passed"],
+            sub_reviewer=sub_reviewer_name,
+            attempt=attempt,
+            goal=task["goal"],
+            allowed_paths=task["allowed_paths"],
+            worker_result=normalized_result,
+            verification_passed=verification["passed"],
+            scope_ok=scope_ok_val,
+            candidate_hash=candidate_hash_val,
+            rework_context=worker_task.get("rework_context"),
+            leader_thinking=leader_thinking_meta,
         )
+        normalized_result["extensions"]["agent_hops"] = initial_hops
         evidence = {"task": task, "attempt": attempt, "provider": task["provider"], "brain": self.brain_name,
                     "role": role_name, "sub_reviewer": sub_reviewer_name,
                     "verifier_contract": contract,
                     "worker_claim": result["summary"], "worker_result": normalized_result,
+                    "agent_hops": initial_hops,
                     "provider_metadata": provider_metadata,
                     "rework_context": worker_task.get("rework_context"),
                     "milestone": milestone,
-                    "baseline": baseline, "baseline_hash": digest(manifest(base)), "candidate_hash": digest(tree),
-                    "manifest": tree, "changed_paths": changed, "scope_ok": set(changed) <= set(task["allowed_paths"]),
+                    "baseline": baseline, "baseline_hash": digest(manifest(base)), "candidate_hash": candidate_hash_val,
+                    "manifest": tree, "changed_paths": changed, "scope_ok": scope_ok_val,
                     "changes": change_details(base, candidate), "source_snapshot": self.store.submission(run).get("source_snapshot"),
                     "diff": patch, "verification": verification,
                     "usage": {"tokens": None, "amount": None, "source": "unavailable"}}
@@ -307,8 +327,15 @@ class Scheduler:
             self.store.save_evidence(run, tid, attempt, evidence, {"decision": "pending", "candidate_hash": evidence["candidate_hash"]}, fence)
             return
         sub_review = None
+        sub_thinking_meta = None
         if sub_reviewer_name and sub_reviewer_name in self.adapters and sub_reviewer_name != self.brain_name:
             sub_adapter = self.adapters[sub_reviewer_name]
+            sub_thinking_meta = {
+                "model": getattr(sub_adapter, "model", None),
+                "reasoning_effort": getattr(sub_adapter, "reasoning_effort", None),
+                "thinking": getattr(sub_adapter, "thinking", None),
+                "context_window": getattr(sub_adapter, "context_window_raw", None) or getattr(sub_adapter, "context_window", None),
+            }
             sub_brain = CodexBrain(sub_adapter) if (sub_reviewer_name != "mock" and getattr(sub_adapter, "enabled", False)) else MockBrain()
             sub_review = validate_review(await sub_brain.review(evidence, candidate, cancelled=cancelled), evidence)
             evidence["sub_review"] = {"reviewer": sub_reviewer_name, "review": sub_review}
@@ -319,6 +346,27 @@ class Scheduler:
             review = validate_review(await self.brain.review(evidence, candidate, cancelled=cancelled), evidence)
         if self.brain_name in ("codex", "qoder-cn", "claude", "deepseek", "antigravity"):
             evidence["reviewer_metadata"] = self.brain_adapter.last_metadata
+        final_hops = build_agent_hops(
+            leader=self.brain_name,
+            worker=task["provider"],
+            role=role_name,
+            sub_reviewer=sub_reviewer_name,
+            attempt=attempt,
+            goal=task["goal"],
+            allowed_paths=task["allowed_paths"],
+            worker_result=normalized_result,
+            verification_passed=verification["passed"],
+            scope_ok=scope_ok_val,
+            candidate_hash=candidate_hash_val,
+            sub_review=evidence.get("sub_review"),
+            leader_review=review,
+            rework_context=worker_task.get("rework_context"),
+            leader_thinking=leader_thinking_meta,
+            sub_reviewer_thinking=sub_thinking_meta,
+        )
+        normalized_result["extensions"]["agent_hops"] = final_hops
+        evidence["agent_hops"] = final_hops
+        (base.parent / "evidence.json").write_text(json.dumps(evidence, indent=2, ensure_ascii=False), encoding="utf-8")
         if digest(manifest(candidate)) != evidence["candidate_hash"]:
             raise OrchError("Candidate changed during review")
         if cancelled():
@@ -374,6 +422,27 @@ class Scheduler:
         candidate = self.store.root / "runs" / run / task / str(t["attempt"]) / "candidate"
         if digest(manifest(candidate)) != evidence["candidate_hash"]:
             raise OrchError("Candidate drift invalidates review")
+        from .wire import build_agent_hops
+        t_spec = evidence.get("task") or {}
+        updated_hops = build_agent_hops(
+            leader="interactive-leader",
+            worker=evidence.get("provider", "worker"),
+            role=evidence.get("role") or t_spec.get("role") or "worker",
+            sub_reviewer=evidence.get("sub_reviewer") or t_spec.get("sub_reviewer"),
+            attempt=t["attempt"],
+            goal=t_spec.get("goal", ""),
+            allowed_paths=t_spec.get("allowed_paths", ["stats.py"]),
+            worker_result=evidence.get("worker_result"),
+            verification_passed=bool((evidence.get("verification") or {}).get("passed")),
+            scope_ok=bool(evidence.get("scope_ok")),
+            candidate_hash=evidence.get("candidate_hash", ""),
+            sub_review=evidence.get("sub_review"),
+            leader_review=decision,
+            rework_context=evidence.get("rework_context"),
+        )
+        evidence["agent_hops"] = updated_hops
+        if isinstance(evidence.get("worker_result"), dict) and isinstance(evidence["worker_result"].get("extensions"), dict):
+            evidence["worker_result"]["extensions"]["agent_hops"] = updated_hops
         state = self.store.complete_review(run, task, t["attempt"], t["fence"], evidence, decision, "local-user")
         if state == "rework":
             cap = json.loads(r["plan"])["max_rework_rounds"]

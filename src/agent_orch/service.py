@@ -223,7 +223,8 @@ class Service:
                     item.update(candidate_hash=ev["candidate_hash"], scope_ok=ev["scope_ok"], changed_paths=ev["changed_paths"],
                                 diff=redact(ev["diff"])[:12000], verification_passed=ev["verification"]["passed"],
                                 baseline_passed=ev["baseline"]["passed"], verifier_contract=ev.get("verifier_contract"),
-                                worker_result=ev.get("worker_result"))
+                                worker_result=ev.get("worker_result"),
+                                agent_hops=ev.get("agent_hops") or (ev.get("worker_result") or {}).get("extensions", {}).get("agent_hops", []))
                 evidence.append(item)
             reviews = [json.loads(r[0]) for r in self.store.db.execute("SELECT body FROM reviews WHERE run_id=? AND task_id=? ORDER BY rowid", (run, arguments["task_id"]))]
             reviews = [{"decision": r["decision"], "candidate_hash": r["candidate_hash"], "reasons": [redact(text) for text in r["reasons"][:10]]} for r in reviews if r.get("decision") != "pending"]

@@ -227,6 +227,20 @@ class DesktopTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(self.desktop.service.jobs[run], 30)
         detail = await self.desktop.call("run_detail", {"run_id": run})
         self.assertEqual(detail["status"]["state"], "accepted")
-        self.assertEqual(detail["chinese_report"]["language"], "zh-CN")
+        self.assertEqual(detail["chinese_report"]["inter_agent_language"], "en")
+        self.assertEqual(detail["chinese_report"]["final_leader_language"], "zh-CN")
+        self.assertIn("Leader (mock) 最终中文结项报告", detail["chinese_report"]["leader_final_response_zh"])
         self.assertEqual(len(detail["chinese_report"]["tasks_zh"]), 2)
         self.assertIn("已通过 Leader 终审并验收", detail["chinese_report"]["final_state_zh"])
+        first_attempt = detail["evidence"][0]["attempts"][0]
+        self.assertNotIn("summary_zh", first_attempt["worker_result"]["extensions"])
+        self.assertEqual(first_attempt["worker_result"]["extensions"]["wire_language"], "en")
+        hops = first_attempt["agent_hops"]
+        self.assertGreaterEqual(len(hops), 3)
+        for hop in hops[:-1]:
+            self.assertEqual(hop["language"], "en")
+            self.assertIn("thinking_state", hop)
+            self.assertIn("return_content", hop)
+        self.assertEqual(hops[-1]["stage"], "leader_final_zh")
+        self.assertEqual(hops[-1]["language"], "zh-CN")
+        self.assertIn("最终中文审查结论", hops[-1]["return_content"])
