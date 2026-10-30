@@ -84,7 +84,23 @@ async fn desktop_request(app:tauri::AppHandle, action:String, payload:Value) -> 
     }).await.map_err(|_|"Desktop command failed".to_string())?
 }
 fn main() {
+    let context = tauri::generate_context!();
+    // Read-only package diagnostic: no window, backend process, state or model call.
+    if std::env::args().nth(1).as_deref() == Some("--check-embedded-assets") {
+        let index = context.assets().get(&"index.html".into());
+        let html = index.as_ref().map(|bytes| String::from_utf8_lossy(bytes));
+        let mut checked = vec!["index.html".to_string()];
+        let valid = html.as_ref().is_some_and(|html| {
+            let links: Vec<_> = html.split('"').filter(|part| part.starts_with("/assets/")).collect();
+            !links.is_empty() && links.into_iter().all(|path| {
+                checked.push(path.to_string());
+                context.assets().get(&path.into()).is_some()
+            })
+        });
+        println!("{}", json!({"embedded_assets_ok":valid,"checked":checked,"window_opened":false,"provider_calls":0}));
+        std::process::exit(if valid {0} else {2});
+    }
     tauri::Builder::default().manage(Backend::default()).invoke_handler(tauri::generate_handler![desktop_request])
-        .build(tauri::generate_context!()).expect("Unable to initialize Agent Helm desktop")
+        .build(context).expect("Unable to initialize Agent Helm desktop")
         .run(|app,event| if let tauri::RunEvent::Exit = event {if let Ok(mut state)=app.state::<Backend>().0.lock(){state.take();}});
 }

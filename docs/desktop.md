@@ -1,5 +1,7 @@
 # Tauri 桌面工作台（Windows）
 
+v0.8.1 修复 Windows 盘符绝对路径被 Tauri 当作 URL、导致安装后 `ERR_FILE_NOT_FOUND` 的问题。构建改用相对目录，跨盘使用 Windows 文件命名空间路径；发布构建通过 Tauri 自身的类型解析检查目录与入口文件。打包 CI 另用 `--check-embedded-assets` 只读检查可执行文件内的 HTML/JS/CSS，不创建窗口、启动后端或调用模型；这不是图形界面的运行验收。
+
 桌面界面和 MCP 共用 Python 调度、候选哈希及独立验收逻辑。桌面端另有仅供本地用户的私有通信入口，用于配置、审批、预算确认和人工审查；这些权限不会加入 MCP 工具。
 
 ## 使用界面
@@ -34,4 +36,4 @@ npm run dev
 
 当前只推进 Windows，Linux/macOS 验证延期。原有命令行/MCP 打包验收工作流改为手动触发，避免本次桌面提交自动运行产物测试。新增 Windows 桌面 CI 仅执行离线 Python 测试、TypeScript/DOM 测试、静态前端构建和 `cargo check --locked`，不生成/启动安装包，不调用真实模型。
 
-也可在 **Actions → Windows desktop development checks → Run workflow** 勾选 `bundle`，仅构建 Windows 安装程序并上传 14 天有效的 artifact；该分支不启动或验证产物，也不调用任何模型。默认不勾选，继续只跑开发检查。
+也可在 **Actions → Windows desktop development checks → Run workflow** 勾选 `bundle`，构建 Windows 安装程序、只读自检内嵌文件并上传 14 天有效的 artifact；该分支不打开图形窗口、不进行安装后功能验收，也不调用任何模型。默认不勾选，继续只跑开发检查。

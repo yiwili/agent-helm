@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join, relative, isAbsolute, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { frontendDirectory } from "./config.mjs";
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), ".."),
   repo = resolve(desktop, "..");
 const mode = process.argv[2];
@@ -43,7 +44,7 @@ function run(command, args) {
   });
   if (r.status !== 0) throw Error(`Command failed (${r.status}): ${command}`);
 }
-const config = { build: { frontendDist: env.AGENT_HELM_WEB_DIST } };
+const config = { build: { frontendDist: frontendDirectory(env.AGENT_HELM_WEB_DIST) } };
 if (mode === "build") {
   let engine =
     process.env.AGENT_HELM_ENGINE_DIR &&

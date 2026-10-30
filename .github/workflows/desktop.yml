@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       bundle:
-        description: 'Build a Windows installer without launching or validating it'
+        description: 'Build Windows installer and check embedded files without opening a window'
         type: boolean
         default: false
   push:
@@ -35,6 +35,11 @@ jobs:
           $env:AGENT_HELM_PYTHON = (Get-Command python.exe).Source
           npm ci
           npm run build
+      - name: Check embedded files only (no window, backend, authentication or model)
+        shell: pwsh
+        run: |
+          $env:AGENT_HELM_ASSET_CHECK_EXE = Join-Path $env:RUNNER_TEMP 'agent-helm-desktop-package/cargo/release/agent-helm-desktop.exe'
+          python -c "import json,os,subprocess; p=subprocess.run([os.environ['AGENT_HELM_ASSET_CHECK_EXE'],'--check-embedded-assets'],capture_output=True,text=True,encoding='utf-8',timeout=20,check=True); r=json.loads(p.stdout); assert r['embedded_assets_ok'] and not r['window_opened'] and r['provider_calls']==0; print(p.stdout)"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: agent-helm-desktop-windows-installer
@@ -73,5 +78,5 @@ jobs:
         run: |
           rustup default stable
           $web = Join-Path $env:RUNNER_TEMP 'agent-helm-desktop/web'
-          $env:TAURI_CONFIG = @{build=@{frontendDist=$web}} | ConvertTo-Json -Compress -Depth 4
+          $env:TAURI_CONFIG = node ../scripts/config.mjs $web
           cargo check --locked
