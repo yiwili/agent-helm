@@ -1,4 +1,4 @@
-# Agent Helm One-Click Launcher (GUI Studio / MCP Server / CLI)
+﻿# Agent Helm One-Click Launcher (GUI Studio / MCP Server / CLI)
 [CmdletBinding(PositionalBinding = $false)]
 param(
     [Parameter(Position = 0)]
