@@ -100,9 +100,15 @@ try {
     Write-Host "  Press Ctrl+C to stop the service." -ForegroundColor Gray
     Write-Host "============================================================" -ForegroundColor Green
 
-    $OpenArgs = if ($NoBrowser) { @() } else { @("--open") }
     $ErrorActionPreference = "Continue"
-    & $PythonExe -m agent_orch --state-root $StateRoot desktop --http --web-dir $WebDistDir --port $Port @OpenArgs @ExtraArgs
+    $CmdArgs = @("-m", "agent_orch", "--state-root", $StateRoot, "desktop", "--http", "--web-dir", $WebDistDir, "--port", "$Port")
+    if (-not $NoBrowser) {
+        $CmdArgs += "--open"
+    }
+    if ($ExtraArgs) {
+        $CmdArgs += $ExtraArgs
+    }
+    & $PythonExe @CmdArgs
     exit $LASTEXITCODE
 } catch {
     $errText = "[$(Get-Date -Format o)] ERROR: $($_.Exception.Message)`r`n$($_.ScriptStackTrace)"
