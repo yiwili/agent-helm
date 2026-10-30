@@ -247,6 +247,59 @@ def encode_wire_message(sender: str, receiver: str, action: str, payload: dict[s
     return f"AHCP1|{sender}->{receiver}|{action}|{compact_body}"
 
 
+_INTERMEDIATE_PROCESS_KEYS = frozenset(
+    {
+        "agent_hops",
+        "thinking",
+        "thinking_state",
+        "provider_metadata",
+        "reviewer_metadata",
+        "milestone",
+        "usage",
+        "worker_result",
+    }
+)
+
+
+def agent_result_only_view(evidence: dict[str, Any]) -> dict[str, Any]:
+    """Strip all intermediate process / thinking traces / hop logs so downstream agents ONLY see final results.
+
+    Rule: Intermediate processes and thinking states are strictly for human user inspection in the UI;
+    agents communicating with each other receive ONLY the final result payload.
+    """
+    if not isinstance(evidence, dict):
+        return {}
+    clean: dict[str, Any] = {}
+    for k, v in evidence.items():
+        if k in _INTERMEDIATE_PROCESS_KEYS:
+            continue
+        if k == "sub_review" and isinstance(v, dict):
+            rev = v.get("review") if isinstance(v.get("review"), dict) else v
+            clean["sub_review"] = {
+                "reviewer": v.get("reviewer"),
+                "decision": rev.get("decision"),
+                "candidate_hash": rev.get("candidate_hash"),
+                "reasons": rev.get("reasons", []),
+            }
+            continue
+        if k == "rework_context" and isinstance(v, dict):
+            old_rev = v.get("review") if isinstance(v.get("review"), dict) else {}
+            clean["rework_context"] = {
+                "previous_attempt": v.get("previous_attempt"),
+                "previous_candidate_hash": v.get("previous_candidate_hash"),
+                "review": {
+                    "decision": old_rev.get("decision"),
+                    "candidate_hash": old_rev.get("candidate_hash"),
+                    "reasons": old_rev.get("reasons", []),
+                },
+                "verification": v.get("verification"),
+                "previous_diff": v.get("previous_diff"),
+            }
+            continue
+        clean[k] = v
+    return clean
+
+
 def translate_summary_to_zh(summary_en: str, *, provider: str = "", role: str = "", passed: bool = True) -> str:
     """Used by the Leader to synthesize a Chinese final conclusion from an English worker/reviewer technical summary."""
     text = (summary_en or "").strip()
@@ -345,7 +398,9 @@ def build_agent_hops(
             "from_agent": f"Leader ({leader})",
             "to_agent": f"Worker [{role}] ({worker})",
             "language": "en",
+            "agent_handoff_mode": "result_only",
             "thinking_state": {
+                "visibility": "user_only",
                 "agent": leader,
                 "role": "leader",
                 "model": l_model,
@@ -382,7 +437,9 @@ def build_agent_hops(
                 "from_agent": f"Worker [{role}] ({worker})",
                 "to_agent": receiver_label,
                 "language": "en",
+                "agent_handoff_mode": "result_only",
                 "thinking_state": {
+                    "visibility": "user_only",
                     "agent": worker,
                     "role": role,
                     "model": w_model,
@@ -402,7 +459,7 @@ def build_agent_hops(
                     {"s": summary_en[:160], "f": [f.get("path", "") for f in files_list]},
                 ),
                 "compact_payload": compact_worker_obj,
-                "return_content": f"[EN Return] Summary: {summary_en} | Modified files: {', '.join(f.get('path', '') for f in files_list) or 'none'}",
+                "return_content": f"[EN Result Only] Summary: {summary_en} | Modified files: {', '.join(f.get('path', '') for f in files_list) or 'none'}",
             }
         )
 
@@ -428,7 +485,9 @@ def build_agent_hops(
                 "from_agent": f"Sub-Reviewer ({sub_reviewer})",
                 "to_agent": f"Leader ({leader})",
                 "language": "en",
+                "agent_handoff_mode": "result_only",
                 "thinking_state": {
+                    "visibility": "user_only",
                     "agent": sub_reviewer,
                     "role": "sub-reviewer",
                     "model": sr_model,
@@ -443,7 +502,7 @@ def build_agent_hops(
                 },
                 "wire_frame": encode_wire_message(f"sub_reviewer:{sub_reviewer}", f"leader:{leader}", "SUB_REV", sr_compact),
                 "compact_payload": sr_compact,
-                "return_content": f"[EN Sub-Review] Decision={sr_decision.upper()} ({sr_code}) | Reasons: {'; '.join(str(x) for x in sr_reasons)}",
+                "return_content": f"[EN Sub-Review Result Only] Decision={sr_decision.upper()} ({sr_code}) | Reasons: {'; '.join(str(x) for x in sr_reasons)}",
             }
         )
 
@@ -467,7 +526,9 @@ def build_agent_hops(
                     "from_agent": f"Leader ({leader})",
                     "to_agent": f"Worker [{role}] ({worker})",
                     "language": "en",
+                    "agent_handoff_mode": "result_only",
                     "thinking_state": {
+                        "visibility": "user_only",
                         "agent": leader,
                         "role": "leader",
                         "model": l_model,
@@ -482,7 +543,7 @@ def build_agent_hops(
                     },
                     "wire_frame": encode_wire_message(f"leader:{leader}", f"worker:{worker}:{role}", "REWORK", l_compact),
                     "compact_payload": l_compact,
-                    "return_content": f"[EN Rework Notice to Worker] Decision=REWORK (R) | Instructions: {'; '.join(str(x) for x in l_reasons_en)}",
+                    "return_content": f"[EN Rework Result Only] Decision=REWORK (R) | Instructions: {'; '.join(str(x) for x in l_reasons_en)}",
                 }
             )
 
@@ -511,7 +572,9 @@ def build_agent_hops(
                 "from_agent": f"Leader ({leader})",
                 "to_agent": "最终交付 (User · 中文输出)",
                 "language": "zh-CN",
+                "agent_handoff_mode": "user_final_zh",
                 "thinking_state": {
+                    "visibility": "user_only",
                     "agent": leader,
                     "role": "leader",
                     "model": l_model,

@@ -295,7 +295,7 @@ function details() {
             const hops: any[] = a.agent_hops || wr?.extensions?.agent_hops || [];
             const hopsHtml = hops.length
               ? `<div class="agent-hops-panel">
-                  <p class="hops-title">Agent 间交互流转 · 返回内容与思考状态轨迹（Agent 间严格英文通信，仅最终 Leader 输出中文）</p>
+                  <p class="hops-title">Agent 间交互流转 · 中间过程监控与净结果传递（中间思考过程仅向用户展示，Agent 之间仅传递英文净结果）</p>
                   <div class="hops-list">
                     ${hops
                       .map((h: any) => {
@@ -305,18 +305,18 @@ function details() {
                           <div class="hop-header">
                             <span class="hop-step">Step ${e(h.step)}</span>
                             <strong class="hop-route">${e(h.from_agent)} ➔ ${e(h.to_agent)}</strong>
-                            <span class="pill ${isZh ? "info" : ""}">${isZh ? "ZH-CN · Leader 最终中文返回" : "EN · Agent 间英文返回"}</span>
+                            <span class="pill ${isZh ? "info" : ""}">${isZh ? "ZH-CN · Leader 最终中文返回" : "EN · 仅传英文净结果 (Result Only)"}</span>
                             <span class="pill success">🧠 ${e(ts.badge || "思考完成")}</span>
                           </div>
                           <div class="hop-thinking">
-                            <strong>思考状态 (Thinking State)：</strong>
+                            <strong>👁️ 中间过程与思考状态（仅向用户展示 · 不传给下游 Agent）：</strong>
                             <span>模型: <code>${e(ts.model || "-")}</code> · 思考强度: <code>${e(ts.reasoning_effort || "standard")}</code> · 上下文: <code>${e(ts.context_window || "default")}</code></span>
                             <div class="hop-thought-text">${e(ts.thought || "")}</div>
                           </div>
                           <div class="hop-return">
-                            <strong>${isZh ? "Leader 最终返回内容 (中文)：" : "Agent 间返回内容 (English)："}</strong>
+                            <strong>${isZh ? "📢 Leader 面向用户的最终中文返回：" : "📤 传给下一跳 Agent 的净结果 (English Result Only · 无中间过程)："}</strong>
                             <div class="hop-return-body">${e(h.return_content || "")}</div>
-                            ${h.wire_frame ? `<small class="hop-wire">AHCP-1 Wire Frame: <code>${e(h.wire_frame)}</code></small>` : ""}
+                            ${h.wire_frame ? `<small class="hop-wire">AHCP-1 净结果通信帧: <code>${e(h.wire_frame)}</code></small>` : ""}
                           </div>
                         </div>`;
                       })

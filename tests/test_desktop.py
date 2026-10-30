@@ -239,8 +239,23 @@ class DesktopTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len(hops), 3)
         for hop in hops[:-1]:
             self.assertEqual(hop["language"], "en")
-            self.assertIn("thinking_state", hop)
+            self.assertEqual(hop["agent_handoff_mode"], "result_only")
+            self.assertEqual(hop["thinking_state"]["visibility"], "user_only")
             self.assertIn("return_content", hop)
         self.assertEqual(hops[-1]["stage"], "leader_final_zh")
         self.assertEqual(hops[-1]["language"], "zh-CN")
         self.assertIn("最终中文审查结论", hops[-1]["return_content"])
+        from agent_orch.wire import agent_result_only_view
+        stripped = agent_result_only_view({
+            "candidate_hash": "abc",
+            "diff": "--- a/stats.py\n+++ b/stats.py",
+            "verification": {"passed": True},
+            "scope_ok": True,
+            "agent_hops": hops,
+            "worker_result": first_attempt["worker_result"],
+            "provider_metadata": {"secret": "internal"},
+        })
+        self.assertNotIn("agent_hops", stripped)
+        self.assertNotIn("worker_result", stripped)
+        self.assertNotIn("provider_metadata", stripped)
+        self.assertEqual(stripped["candidate_hash"], "abc")
