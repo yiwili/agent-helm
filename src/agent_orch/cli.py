@@ -13,6 +13,8 @@ from .adapters.codex_cli import CodexAdapter
 from .adapters.qoder_cn_cli import QoderCNAdapter
 from .adapters.cursor_cli import CursorAdapter, prepare_config
 from .adapters.claude_cli import ClaudeAdapter
+from .adapters.deepseek_cli import DeepSeekAdapter
+from .adapters.antigravity_cli import AntigravityAdapter
 from .brain import fixture_plan
 from .backup import backup_bundle, restore_bundle, verify_backup
 from .integrator import integrate
@@ -48,7 +50,7 @@ def parser():
     prepare = providers.add_parser("prepare-cursor", help="Create a new dedicated deny-tools config outside the repository; no login or model calls")
     prepare.add_argument("--config-dir", type=Path, required=True)
     probe = providers.add_parser("probe")
-    probe.add_argument("provider", choices=["codex", "qoder-cn", "cursor", "claude", "qoder", "traecli", "codebuddy"])
+    probe.add_argument("provider", choices=["codex", "qoder-cn", "cursor", "claude", "deepseek", "antigravity", "qoder", "traecli", "codebuddy"])
     probe.add_argument("--mode", choices=["metadata", "smoke"], default="metadata")
     probe.add_argument("--enable-codex", action="store_true")
     probe.add_argument("--enable-qoder-cn", action="store_true")
@@ -59,12 +61,16 @@ def parser():
     probe.add_argument("--enable-claude", action="store_true")
     probe.add_argument("--claude-bin")
     probe.add_argument("--claude-budget-ledger", type=Path)
+    probe.add_argument("--enable-deepseek", action="store_true")
+    probe.add_argument("--deepseek-bin")
+    probe.add_argument("--enable-antigravity", action="store_true")
+    probe.add_argument("--antigravity-bin")
     probe.add_argument("--workspace", type=Path)
     plan = sub.add_parser("plan")
     plan.add_argument("--request", required=True)
     plan.add_argument("--output", required=True)
     plan.add_argument("--brain", choices=["interactive", "codex", "qoder-cn"], default="interactive")
-    plan.add_argument("--worker-provider", choices=["codex", "qoder-cn", "cursor", "claude", "manual", "mock"], default="codex")
+    plan.add_argument("--worker-provider", choices=["codex", "qoder-cn", "cursor", "claude", "deepseek", "antigravity", "manual", "mock"], default="codex")
     plan.add_argument("--enable-codex", action="store_true")
     plan.add_argument("--enable-qoder-cn", action="store_true")
     plan.add_argument("--qoder-cn-bin")
@@ -94,12 +100,22 @@ def parser():
     execute.add_argument("--enable-codex", action="store_true")
     execute.add_argument("--enable-qoder-cn", action="store_true")
     execute.add_argument("--qoder-cn-bin")
+    execute.add_argument("--qoder-cn-model")
+    execute.add_argument("--qoder-cn-context-window")
+    execute.add_argument("--qoder-cn-reasoning-effort", choices=["low", "high", "max"])
+    execute.add_argument("--qoder-cn-thinking", choices=["auto", "adaptive", "enabled", "disabled"])
     execute.add_argument("--enable-cursor", action="store_true")
     execute.add_argument("--cursor-cli-dir", type=Path)
     execute.add_argument("--cursor-config-dir", type=Path)
     execute.add_argument("--enable-claude", action="store_true")
     execute.add_argument("--claude-bin")
     execute.add_argument("--claude-budget-ledger", type=Path)
+    execute.add_argument("--enable-deepseek", action="store_true")
+    execute.add_argument("--deepseek-bin")
+    execute.add_argument("--deepseek-model")
+    execute.add_argument("--enable-antigravity", action="store_true")
+    execute.add_argument("--antigravity-bin")
+    execute.add_argument("--antigravity-model")
     execute.add_argument("--brain", choices=["mock", "interactive", "codex", "qoder-cn"], default="mock")
     execute.add_argument("--manual-result", type=Path)
     execute.add_argument("--retry-blocked", action="store_true")
@@ -140,9 +156,9 @@ def parser():
     mcp = sub.add_parser("mcp", help="Local stdio MCP server; managed synthetic fixtures only; human approvals stay outside MCP")
     sub.add_parser("desktop", help="Private Tauri desktop transport; not an MCP endpoint")
     mcp.add_argument("--brain", choices=["mock", "interactive", "codex", "qoder-cn"], default="mock")
-    for provider in ("codex", "qoder-cn", "claude", "cursor"):
+    for provider in ("codex", "qoder-cn", "claude", "cursor", "deepseek", "antigravity"):
         mcp.add_argument("--enable-"+provider, action="store_true")
-    for flag in ("qoder-cn-bin", "claude-bin", "claude-budget-ledger", "cursor-cli-dir", "cursor-config-dir"):
+    for flag in ("qoder-cn-bin", "qoder-cn-model", "qoder-cn-context-window", "qoder-cn-reasoning-effort", "qoder-cn-thinking", "claude-bin", "claude-budget-ledger", "cursor-cli-dir", "cursor-config-dir", "deepseek-bin", "deepseek-model", "antigravity-bin", "antigravity-model"):
         mcp.add_argument("--"+flag)
     approval_service = sub.add_parser("service-approve", help="Human-only terminal approval of a service proposal")
     approval_service.add_argument("proposal_id")
@@ -190,12 +206,16 @@ async def dispatch(args):
     if command == "providers":
         if args.provider_command == "prepare-cursor":
             return {"provider": "cursor", "config_dir": str(prepare_config(args.config_dir)), "authenticated": False, "model_calls": 0}
-        if args.provider not in ("codex", "qoder-cn", "cursor", "claude"):
+        if args.provider not in ("codex", "qoder-cn", "cursor", "claude", "deepseek", "antigravity"):
             return {"provider": args.provider, "binary": shutil.which(args.provider), "adapter": "unsupported", "billing_verified": False, "production_ready": False}
         if args.provider == "cursor":
             adapter = CursorAdapter(enabled=args.enable_cursor, package=args.cursor_cli_dir, config_dir=args.cursor_config_dir)
         elif args.provider == "claude":
             adapter = ClaudeAdapter(enabled=args.enable_claude, executable=args.claude_bin, budget_ledger=args.claude_budget_ledger)
+        elif args.provider == "deepseek":
+            adapter = DeepSeekAdapter(enabled=args.enable_deepseek, executable=args.deepseek_bin)
+        elif args.provider == "antigravity":
+            adapter = AntigravityAdapter(enabled=args.enable_antigravity, executable=args.antigravity_bin)
         else:
             adapter = CodexAdapter(enabled=args.enable_codex) if args.provider == "codex" else QoderCNAdapter(enabled=args.enable_qoder_cn, executable=args.qoder_cn_bin)
         report = await adapter.probe(Path.cwd())
@@ -260,11 +280,31 @@ async def dispatch(args):
                 for t in store.tasks(args.run_id):
                     if t["state"] == "blocked":
                         store.transition(args.run_id, t["id"], "queued", payload={"source": "explicit-local-retry"})
+            worker_models = {
+                k: v for k, v in (
+                    ("qoder-cn", args.qoder_cn_model),
+                    ("deepseek", args.deepseek_model),
+                    ("antigravity", args.antigravity_model),
+                ) if v
+            }
+            worker_options = {
+                "qoder-cn": {
+                    "model": args.qoder_cn_model,
+                    "context_window": args.qoder_cn_context_window,
+                    "reasoning_effort": args.qoder_cn_reasoning_effort,
+                    "thinking": args.qoder_cn_thinking,
+                },
+                "deepseek": {"model": args.deepseek_model},
+                "antigravity": {"model": args.antigravity_model},
+            }
             scheduler = Scheduler(store, enable_codex=args.enable_codex, enable_qoder_cn=args.enable_qoder_cn,
                                   qoder_cn_bin=args.qoder_cn_bin, enable_cursor=args.enable_cursor,
                                   cursor_cli_dir=args.cursor_cli_dir, cursor_config_dir=args.cursor_config_dir,
                                   enable_claude=args.enable_claude, claude_bin=args.claude_bin,
                                   claude_budget_ledger=args.claude_budget_ledger,
+                                  enable_deepseek=args.enable_deepseek, deepseek_bin=args.deepseek_bin,
+                                  enable_antigravity=args.enable_antigravity, antigravity_bin=args.antigravity_bin,
+                                  worker_models=worker_models, worker_options=worker_options,
                                   brain=args.brain, manual_result=args.manual_result)
             return await scheduler.execute(args.run_id)
         if command == "status":
@@ -356,7 +396,24 @@ def main(argv=None):
                 return 2
         if args.command == "mcp":
             from .mcp_server import serve
-            runtime = {key: getattr(args, key) for key in ("brain", "enable_codex", "enable_qoder_cn", "enable_claude", "enable_cursor", "qoder_cn_bin", "claude_bin", "claude_budget_ledger", "cursor_cli_dir", "cursor_config_dir")}
+            runtime = {key: getattr(args, key) for key in ("brain", "enable_codex", "enable_qoder_cn", "enable_claude", "enable_cursor", "enable_deepseek", "enable_antigravity", "qoder_cn_bin", "claude_bin", "claude_budget_ledger", "cursor_cli_dir", "cursor_config_dir", "deepseek_bin", "antigravity_bin")}
+            runtime["worker_models"] = {
+                k: v for k, v in (
+                    ("qoder-cn", args.qoder_cn_model),
+                    ("deepseek", args.deepseek_model),
+                    ("antigravity", args.antigravity_model),
+                ) if v
+            }
+            runtime["worker_options"] = {
+                "qoder-cn": {
+                    "model": args.qoder_cn_model,
+                    "context_window": args.qoder_cn_context_window,
+                    "reasoning_effort": args.qoder_cn_reasoning_effort,
+                    "thinking": args.qoder_cn_thinking,
+                },
+                "deepseek": {"model": args.deepseek_model},
+                "antigravity": {"model": args.antigravity_model},
+            }
             try:
                 return asyncio.run(serve(args.state_root, **runtime))
             except (Exception, asyncio.CancelledError, KeyboardInterrupt) as error:

@@ -1,5 +1,167 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "fileEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "content"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        }
+      }
+    },
+    "operationEntry": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "path",
+            "content"
+          ],
+          "properties": {
+            "action": {
+              "const": "write"
+            },
+            "path": {
+              "type": "string"
+            },
+            "content": {
+              "type": "string"
+            },
+            "encoding": {
+              "enum": [
+                "utf-8",
+                "base64"
+              ]
+            },
+            "executable": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "path"
+          ],
+          "properties": {
+            "action": {
+              "const": "delete"
+            },
+            "path": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "path",
+            "target"
+          ],
+          "properties": {
+            "action": {
+              "const": "rename"
+            },
+            "path": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "diagnostics": {
+      "type": "object",
+      "properties": {
+        "root_cause": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "risks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "thinking": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reasoning_effort": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thinking_mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "context_window": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "credits": {
+          "type": "number"
+        },
+        "tokens": {
+          "type": "integer"
+        },
+        "amount_usd": {
+          "type": "number"
+        },
+        "source": {
+          "type": "string"
+        }
+      }
+    }
+  },
   "oneOf": [
     {
       "type": "object",
@@ -9,27 +171,53 @@
         "files"
       ],
       "properties": {
+        "schema_version": {
+          "enum": [
+            1,
+            2
+          ]
+        },
+        "protocol": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "partial",
+            "blocked"
+          ]
+        },
+        "provider": {
+          "type": "string"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
         "summary": {
           "type": "string"
         },
         "files": {
           "type": "array",
+          "maxItems": 50,
           "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "path",
-              "content"
-            ],
-            "properties": {
-              "path": {
-                "type": "string"
-              },
-              "content": {
-                "type": "string"
-              }
-            }
+            "$ref": "#/$defs/fileEntry"
           }
+        },
+        "diagnostics": {
+          "$ref": "#/$defs/diagnostics"
+        },
+        "thinking": {
+          "$ref": "#/$defs/thinking"
+        },
+        "metrics": {
+          "$ref": "#/$defs/metrics"
+        },
+        "artifacts": {
+          "type": "array"
+        },
+        "extensions": {
+          "type": "object"
         }
       }
     },
@@ -45,81 +233,54 @@
         "schema_version": {
           "const": 2
         },
+        "protocol": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "partial",
+            "blocked"
+          ]
+        },
+        "provider": {
+          "type": "string"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
         "summary": {
           "type": "string"
+        },
+        "files": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/$defs/fileEntry"
+          }
         },
         "operations": {
           "type": "array",
           "maxItems": 50,
           "items": {
-            "oneOf": [
-              {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "action",
-                  "path",
-                  "content"
-                ],
-                "properties": {
-                  "action": {
-                    "const": "write"
-                  },
-                  "path": {
-                    "type": "string"
-                  },
-                  "content": {
-                    "type": "string"
-                  },
-                  "encoding": {
-                    "enum": [
-                      "utf-8",
-                      "base64"
-                    ]
-                  },
-                  "executable": {
-                    "type": "boolean"
-                  }
-                }
-              },
-              {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "action",
-                  "path"
-                ],
-                "properties": {
-                  "action": {
-                    "const": "delete"
-                  },
-                  "path": {
-                    "type": "string"
-                  }
-                }
-              },
-              {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "action",
-                  "path",
-                  "target"
-                ],
-                "properties": {
-                  "action": {
-                    "const": "rename"
-                  },
-                  "path": {
-                    "type": "string"
-                  },
-                  "target": {
-                    "type": "string"
-                  }
-                }
-              }
-            ]
+            "$ref": "#/$defs/operationEntry"
           }
+        },
+        "diagnostics": {
+          "$ref": "#/$defs/diagnostics"
+        },
+        "thinking": {
+          "$ref": "#/$defs/thinking"
+        },
+        "metrics": {
+          "$ref": "#/$defs/metrics"
+        },
+        "artifacts": {
+          "type": "array"
+        },
+        "extensions": {
+          "type": "object"
         }
       }
     }

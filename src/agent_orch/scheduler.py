@@ -13,8 +13,10 @@ from .adapters.mock import MockAdapter
 from .adapters.qoder_cn_cli import QoderCNAdapter
 from .adapters.cursor_cli import CursorAdapter
 from .adapters.claude_cli import ClaudeAdapter
+from .adapters.deepseek_cli import DeepSeekAdapter
+from .adapters.antigravity_cli import AntigravityAdapter
 from .brain import CodexBrain, MockBrain
-from .models import OrchError, digest, validate_review, validate_diagnosis, validate_milestone_review
+from .models import OrchError, digest, normalize_worker_result, validate_review, validate_diagnosis, validate_milestone_review
 from .verifier import verify
 from .verifier_context import verifier_context
 from .supervisor import ProcessTreeUnconfirmed
@@ -22,14 +24,51 @@ from .workspace import apply_files, copy_snapshot, diff, manifest, change_detail
 
 
 class Scheduler:
-    def __init__(self, store, *, enable_codex=False, enable_qoder_cn=False, qoder_cn_bin=None, enable_cursor=False, cursor_cli_dir=None, cursor_config_dir=None, enable_claude=False, claude_bin=None, claude_budget_ledger=None, brain="mock", manual_result=None, worker_models=None, codex_bin=None):
+    def __init__(self, store, *, enable_codex=False, enable_qoder_cn=False, qoder_cn_bin=None, enable_cursor=False, cursor_cli_dir=None, cursor_config_dir=None, enable_claude=False, claude_bin=None, claude_budget_ledger=None, enable_deepseek=False, deepseek_bin=None, enable_antigravity=False, antigravity_bin=None, brain="mock", manual_result=None, worker_models=None, worker_options=None, codex_bin=None):
         self.store = store
         models = dict(worker_models or {})
+        options = {k: dict(v) for k, v in (worker_options or {}).items() if isinstance(v, dict)}
+        qoder_opts = options.get("qoder-cn", {})
+        deepseek_opts = options.get("deepseek", {})
+        antigravity_opts = options.get("antigravity", {})
         self.codex = CodexAdapter(enabled=enable_codex, executable=codex_bin, model=models.get("codex"))
-        self.qoder_cn = QoderCNAdapter(enabled=enable_qoder_cn, executable=qoder_cn_bin, model=models.get("qoder-cn"))
+        self.qoder_cn = QoderCNAdapter(
+            enabled=enable_qoder_cn,
+            executable=qoder_cn_bin,
+            model=models.get("qoder-cn") or qoder_opts.get("model"),
+            reasoning_effort=qoder_opts.get("reasoning_effort"),
+            thinking=qoder_opts.get("thinking"),
+            context_window=qoder_opts.get("context_window"),
+        )
         self.cursor = CursorAdapter(enabled=enable_cursor, package=cursor_cli_dir, config_dir=cursor_config_dir)
         self.claude = ClaudeAdapter(enabled=enable_claude, executable=claude_bin, budget_ledger=claude_budget_ledger, model=models.get("claude"))
-        self.adapters = {"mock": MockAdapter(), "manual": ManualAdapter(manual_result), "codex": self.codex, "qoder-cn": self.qoder_cn, "cursor": self.cursor, "claude": self.claude}
+        self.deepseek = DeepSeekAdapter(
+            enabled=enable_deepseek,
+            executable=deepseek_bin,
+            model=models.get("deepseek") or deepseek_opts.get("model"),
+            reasoning_effort=deepseek_opts.get("reasoning_effort"),
+            thinking=deepseek_opts.get("thinking"),
+            context_window=deepseek_opts.get("context_window"),
+        )
+        self.antigravity = AntigravityAdapter(
+            enabled=enable_antigravity,
+            executable=antigravity_bin,
+            model=models.get("antigravity") or antigravity_opts.get("model"),
+            reasoning_effort=antigravity_opts.get("reasoning_effort"),
+            thinking=antigravity_opts.get("thinking"),
+            context_window=antigravity_opts.get("context_window"),
+        )
+        self.adapters = {
+            "mock": MockAdapter(),
+            "manual": ManualAdapter(manual_result),
+            "codex": self.codex,
+            "qoder-cn": self.qoder_cn,
+            "cursor": self.cursor,
+            "claude": self.claude,
+            "deepseek": self.deepseek,
+            "antigravity": self.antigravity,
+        }
+        self.worker_options = options
         self.brain_name = brain
         self.brain_adapter = self.adapters.get(brain)
         self.brain = CodexBrain(self.brain_adapter) if brain in ("codex", "qoder-cn") else MockBrain()
@@ -80,11 +119,11 @@ class Scheduler:
             if t["state"] != "queued":
                 continue
             task = json.loads(t["spec"])
-            if self.brain_name == "mock" and task["provider"] != "mock":
-                self.store.transition(run, t["id"], "blocked", payload={"reason": "Real/manual workers require codex, qoder-cn or interactive review"})
-                continue
-            if task["provider"] in ("codex", "qoder-cn", "cursor", "claude") and not self.adapters[task["provider"]].enabled:
+            if task["provider"] in ("codex", "qoder-cn", "cursor", "claude", "deepseek", "antigravity") and not self.adapters[task["provider"]].enabled:
                 self.store.transition(run, t["id"], "blocked", payload={"reason": task["provider"]+" disabled; no API fallback"})
+                continue
+            if self.brain_name == "mock" and task["provider"] == "manual":
+                self.store.transition(run, t["id"], "blocked", payload={"reason": "Real/manual workers require codex, qoder-cn or interactive review"})
                 continue
             if task["provider"] == "claude":
                 from .budget import Budget
@@ -133,6 +172,8 @@ class Scheduler:
         self.qoder_cn.process_observer = process_event
         self.cursor.process_observer = process_event
         self.claude.process_observer = process_event
+        self.deepseek.process_observer = process_event
+        self.antigravity.process_observer = process_event
         root = self.store.root / "runs" / run
         root.mkdir(parents=True, exist_ok=True)
         original = root / "original"
@@ -186,6 +227,21 @@ class Scheduler:
             raise OrchError("Read-only worker unexpectedly changed workspace")
         if cancelled():
             raise asyncio.CancelledError()
+        provider_metadata = getattr(adapter, "last_metadata", None)
+        usage_meta = provider_metadata.get("usage") if isinstance(provider_metadata, dict) and isinstance(provider_metadata.get("usage"), dict) else None
+        normalized_result = normalize_worker_result(
+            result,
+            task["allowed_paths"],
+            provider=task["provider"],
+            attempt=attempt,
+            metadata=usage_meta,
+            thinking={
+                "model": getattr(adapter, "model", None),
+                "reasoning_effort": getattr(adapter, "reasoning_effort", None),
+                "thinking": getattr(adapter, "thinking", None),
+                "context_window": getattr(adapter, "context_window_raw", None) or getattr(adapter, "context_window", None),
+            },
+        )
         apply_files(candidate, result, task["allowed_paths"])
         self.store.transition(run, tid, "verifying", fence)
         verification = await verify(candidate, cancelled=cancelled, profile=profile)
@@ -193,7 +249,8 @@ class Scheduler:
         tree = manifest(candidate)
         evidence = {"task": task, "attempt": attempt, "provider": task["provider"], "brain": self.brain_name,
                     "verifier_contract": contract,
-                    "worker_claim": result["summary"], "provider_metadata": getattr(adapter, "last_metadata", None),
+                    "worker_claim": result["summary"], "worker_result": normalized_result,
+                    "provider_metadata": provider_metadata,
                     "rework_context": worker_task.get("rework_context"),
                     "milestone": milestone,
                     "baseline": baseline, "baseline_hash": digest(manifest(base)), "candidate_hash": digest(tree),

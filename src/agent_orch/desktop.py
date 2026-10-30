@@ -9,24 +9,101 @@ import uuid
 from pathlib import Path
 
 from .adapters.codex_cli import model_id, redact, unique_object
+from .adapters.qoder_cn_cli import REASONING_EFFORTS, THINKING_MODES, normalize_context_window, resolve_executable_path
 from .brain import fixture_plan
 from .budget import Budget, create_budget
 from .models import OrchError, digest
 from .scheduler import Scheduler
 from .service import Service
 
-PROVIDERS = {"mock": "Mock", "codex": "Codex", "claude": "Claude CLI", "qoder-cn": "Qoder CN"}
+PROVIDERS = {
+    "mock": "Mock",
+    "codex": "Codex",
+    "claude": "Claude CLI",
+    "qoder-cn": "Qoder CN",
+    "deepseek": "DeepSeek Harness",
+    "antigravity": "Gemini / Antigravity CLI",
+}
+
+PRESET_MODELS = {
+    "mock": [],
+    "codex": ["gpt-5-codex", "o3", "o4-mini"],
+    "claude": ["claude-sonnet-4-5", "claude-opus-4-5", "glm-5.3[1m]", "deepseek-v4-pro"],
+    "qoder-cn": [
+        "deepseek-flash",
+        "DeepSeek-Flash",
+        "deepseek-v4-pro",
+        "DeepSeek-V4-Pro",
+        "glm-5.3",
+        "GLM-5.3",
+        "glm-5.3-flash",
+        "GLM-5.3-Flash",
+        "kimi-k3.1-pro",
+        "Kimi-K3.1-Pro",
+        "Qwen3.8-Max",
+        "Qwen3.8-Flash",
+        "MiniMax-M3.1-Flash",
+    ],
+    "deepseek": ["deepseek-reasoner", "deepseek-chat", "deepseek-v4-pro", "deepseek-flash"],
+    "antigravity": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-3-pro", "gemini-3-flash"],
+}
 
 
 def defaults():
-    return {key: {"provider": key, "name": name, "enabled": key == "mock", "connection": "auto", "executable": "", "model": "", "models": [], "budget_ledger": ""}
-            for key, name in PROVIDERS.items()}
+    return {
+        key: {
+            "provider": key,
+            "name": name,
+            "enabled": key == "mock",
+            "connection": "auto",
+            "executable": "",
+            "model": "deepseek-flash" if key == "qoder-cn" else "",
+            "models": [],
+            "preset_models": list(PRESET_MODELS.get(key, [])),
+            "reasoning_effort": "high" if key == "qoder-cn" else "",
+            "thinking": "",
+            "context_window": "1m" if key == "qoder-cn" else "",
+            "review_mode": "auto",
+            "budget_ledger": "",
+        }
+        for key, name in PROVIDERS.items()
+    }
+
+
+def _clean_path(provider, raw_value):
+    if not isinstance(raw_value, str):
+        raise OrchError("Invalid configuration path")
+    value = raw_value.strip().strip('"').strip("'")
+    if len(value) > 2000:
+        raise OrchError("Invalid configuration path")
+    if not value:
+        return ""
+    if provider == "qoder-cn":
+        resolved = resolve_executable_path(value) or value
+    else:
+        p = Path(value)
+        if p.is_dir():
+            names = {
+                "codex": ("codex.exe", "codex"),
+                "claude": ("claude.exe", "claude"),
+                "deepseek": ("deepseek-harness.exe", "deepseek-cli.exe", "deepseek.exe"),
+                "antigravity": ("agy.exe", "gemini.exe", "antigravity.exe"),
+            }.get(provider, ())
+            resolved = value
+            for n in names:
+                sub = p / n
+                if sub.is_file():
+                    resolved = str(sub)
+                    break
+        else:
+            resolved = value
+    return resolved
 
 
 class Desktop:
     def __init__(self, root):
         self.service = Service(root)
-        self.path = self.service.root/"desktop-profiles.json"
+        self.path = self.service.root / "desktop-profiles.json"
         self.profiles = defaults()
         if self.path.exists():
             body = json.loads(self.path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
@@ -37,9 +114,11 @@ class Desktop:
         self.probes = {}
 
     def validate_profile(self, profile):
-        if not isinstance(profile, dict) or set(profile)-set(defaults()["mock"]) or profile.get("provider") not in PROVIDERS:
+        if not isinstance(profile, dict) or set(profile) - set(defaults()["mock"]) or profile.get("provider") not in PROVIDERS:
             raise OrchError("Unknown agent profile")
-        result = {**defaults()[profile["provider"]], **profile}
+        provider = profile["provider"]
+        result = {**defaults()[provider], **profile}
+        result["preset_models"] = list(PRESET_MODELS.get(provider, []))
         if type(result["enabled"]) is not bool or result["connection"] not in ("auto", "path") or not isinstance(result["name"], str) or not 1 <= len(result["name"]) <= 60:
             raise OrchError("Invalid agent connection configuration")
         result["model"] = model_id(result["model"]) or ""
@@ -48,16 +127,32 @@ class Desktop:
         result["models"] = list(dict.fromkeys(model_id(m) for m in result["models"] if m))
         if result["model"] and result["model"] not in result["models"]:
             result["models"] = [result["model"], *result["models"]][:30]
+        effort = (result.get("reasoning_effort") or "").strip().lower() if isinstance(result.get("reasoning_effort"), str) else ""
+        if effort and effort not in REASONING_EFFORTS:
+            raise OrchError("Invalid reasoning_effort; expected low, high, or max")
+        result["reasoning_effort"] = effort
+        thinking = (result.get("thinking") or "").strip().lower() if isinstance(result.get("thinking"), str) else ""
+        if thinking and thinking not in THINKING_MODES:
+            raise OrchError("Invalid thinking mode")
+        result["thinking"] = thinking
+        ctx_raw = (result.get("context_window") or "").strip().lower() if isinstance(result.get("context_window"), str) else ""
+        if ctx_raw:
+            normalize_context_window(ctx_raw)
+        result["context_window"] = ctx_raw
+        review_mode = (result.get("review_mode") or "auto").strip().lower() if isinstance(result.get("review_mode"), str) else "auto"
+        if review_mode not in ("auto", "interactive"):
+            raise OrchError("Invalid review_mode")
+        result["review_mode"] = review_mode
+        result["executable"] = _clean_path(provider, result["executable"])
+        result["budget_ledger"] = _clean_path(provider, result["budget_ledger"])
         for key in ("executable", "budget_ledger"):
             value = result[key]
-            if not isinstance(value, str) or len(value) > 2000:
-                raise OrchError("Invalid configuration path")
             if value and (not Path(value).is_absolute() or Path(value).suffix.lower() in (".cmd", ".bat", ".ps1")):
                 raise OrchError("Use an absolute native executable or budget path, never a shell command")
         if result["connection"] == "path" and (not result["executable"] or not Path(result["executable"]).is_file()):
             raise OrchError("Selected CLI executable does not exist")
-        if result["provider"] == "mock":
-            result.update(connection="auto", executable="", model="", models=[], enabled=True)
+        if provider == "mock":
+            result.update(connection="auto", executable="", model="", models=[], reasoning_effort="", thinking="", context_window="", review_mode="auto", enabled=True)
         return result
 
     def save(self):
@@ -70,12 +165,33 @@ class Desktop:
         if not profile["enabled"]:
             raise OrchError("Enable this agent before creating its task")
         paths = {key: value["executable"] if value["connection"] == "path" else None for key, value in profiles.items()}
-        return {"enable_codex": profiles["codex"]["enabled"], "enable_claude": profiles["claude"]["enabled"],
-                "enable_qoder_cn": profiles["qoder-cn"]["enabled"], "codex_bin": paths["codex"],
-                "claude_bin": paths["claude"], "qoder_cn_bin": paths["qoder-cn"],
-                "claude_budget_ledger": profiles["claude"]["budget_ledger"] or None,
-                "worker_models": {key: value["model"] or None for key, value in profiles.items()},
-                "brain": "mock" if provider == "mock" else "interactive"}
+        worker_options = {
+            key: {
+                "model": value["model"] or None,
+                "reasoning_effort": value.get("reasoning_effort") or None,
+                "thinking": value.get("thinking") or None,
+                "context_window": value.get("context_window") or None,
+            }
+            for key, value in profiles.items()
+        }
+        review_mode = profile.get("review_mode", "auto")
+        brain = "mock" if (provider == "mock" or review_mode == "auto") else "interactive"
+        return {
+            "enable_codex": profiles["codex"]["enabled"],
+            "enable_claude": profiles["claude"]["enabled"],
+            "enable_qoder_cn": profiles["qoder-cn"]["enabled"],
+            "enable_deepseek": profiles["deepseek"]["enabled"],
+            "enable_antigravity": profiles["antigravity"]["enabled"],
+            "codex_bin": paths["codex"],
+            "claude_bin": paths["claude"],
+            "qoder_cn_bin": paths["qoder-cn"],
+            "deepseek_bin": paths["deepseek"],
+            "antigravity_bin": paths["antigravity"],
+            "claude_budget_ledger": profiles["claude"]["budget_ledger"] or None,
+            "worker_models": {key: value["model"] or None for key, value in profiles.items()},
+            "worker_options": worker_options,
+            "brain": brain,
+        }
 
     def dashboard(self):
         proposals = self.service.index.execute("SELECT id,run FROM proposals ORDER BY rowid DESC LIMIT 50").fetchall()
@@ -108,21 +224,27 @@ class Desktop:
             self.save()
             return self.dashboard()
         if action == "probe_agent":
-            provider = payload.get("provider")
+            if isinstance(payload.get("profile"), dict):
+                saved = self.validate_profile(payload["profile"])
+                self.profiles[saved["provider"]] = saved
+                self.save()
+                provider = saved["provider"]
+            else:
+                provider = payload.get("provider")
             if provider not in PROVIDERS:
                 raise OrchError("Unknown agent")
             if provider == "mock":
-                result = {"installed": True, "authenticated": True, "compatible": True, "version": "offline"}
+                result = {"installed": True, "authenticated": True, "compatible": True, "version": "offline", "binary": "builtin"}
             else:
                 runtime = self.runtime({key: {**value, "enabled": True} for key, value in self.profiles.items()}, provider)
                 adapter = Scheduler(self.service.store, **runtime).adapters[provider]
                 result = await adapter.probe(self.service.root)
-            self.probes[provider] = {key: result.get(key) for key in ("installed", "authenticated", "compatible", "version")}
+            self.probes[provider] = {key: result.get(key) for key in ("installed", "authenticated", "compatible", "version", "binary")}
             return self.probes[provider]
         if action == "budget_create":
             if payload.get("confirmed") is not True:
                 raise OrchError("Explicit budget confirmation required")
-            path = self.service.root/"desktop-budgets"/("budget-"+uuid.uuid4().hex+".db")
+            path = self.service.root / "desktop-budgets" / ("budget-" + uuid.uuid4().hex + ".db")
             result = create_budget(path, payload["total_usd"], payload["per_call_usd"])
             self.profiles["claude"]["budget_ledger"] = str(path)
             self.save()
@@ -146,17 +268,17 @@ class Desktop:
             if not isinstance(goal, str) or not 1 <= len(goal) <= 2000:
                 raise OrchError("Task goal must be 1..2000 characters")
             plan = fixture_plan(goal=goal, provider=provider, behavior="bad-first" if payload.get("fault_demo") and provider == "mock" else "good")
-            plan["tasks"][0]["milestone_review"] = False  # Desktop live tasks use explicit human final review.
+            plan["tasks"][0]["milestone_review"] = False
             result = await self.service.call("helm_plan_prepare", {"workspace_id": fixture["workspace_id"], "plan": plan})
             # Freeze human-selected connection/model at proposal creation, not at a later run.
-            path = self.service.root/(result["proposal_id"]+".desktop.json")
+            path = self.service.root / (result["proposal_id"] + ".desktop.json")
             path.write_text(json.dumps({"runtime": runtime, "runtime_hash": digest(runtime)}), encoding="utf-8")
             result["runtime_hash"] = digest(runtime)
             result["requested_model"] = self.profiles[provider]["model"] or None
             return result
         if action == "proposal":
             result = self.service.proposal(payload["proposal_id"])
-            frozen = json.loads((self.service.root/(result["proposal_id"]+".desktop.json")).read_text(encoding="utf-8"))
+            frozen = json.loads((self.service.root / (result["proposal_id"] + ".desktop.json")).read_text(encoding="utf-8"))
             result.update(runtime_hash=frozen["runtime_hash"], agent_configuration=frozen["runtime"])
             return result
         if action == "approve_start":
@@ -167,7 +289,7 @@ class Desktop:
             ident = payload["proposal_id"]
             if not isinstance(ident, str) or not __import__("re").fullmatch(r"proposal-[0-9a-f]{32}", ident):
                 raise OrchError("Invalid proposal handle")
-            frozen = json.loads((self.service.root/(ident+".desktop.json")).read_text(encoding="utf-8"))
+            frozen = json.loads((self.service.root / (ident + ".desktop.json")).read_text(encoding="utf-8"))
             runtime = frozen["runtime"]
             if payload.get("plan_hash") != self.service.proposal(ident)["plan_hash"] or payload.get("runtime_hash") != digest(runtime) or frozen["runtime_hash"] != digest(runtime):
                 raise OrchError("Plan or connection/model changed; review the proposal again")
@@ -200,7 +322,7 @@ class Desktop:
                 raise OrchError("Explicit rework execution confirmation required")
             run = payload["run_id"]
             row = self.service._owned(run)
-            frozen = json.loads((self.service.root/(row["id"]+".desktop.json")).read_text(encoding="utf-8"))
+            frozen = json.loads((self.service.root / (row["id"] + ".desktop.json")).read_text(encoding="utf-8"))
             runtime = frozen["runtime"]
             if frozen["runtime_hash"] != digest(runtime):
                 raise OrchError("Frozen runtime changed; reconciliation required")
@@ -240,7 +362,7 @@ async def serve_desktop(root):
     controller = Desktop(root)
     try:
         while True:
-            line = await asyncio.to_thread(sys.stdin.buffer.readline, MAX_MESSAGE+1)
+            line = await asyncio.to_thread(sys.stdin.buffer.readline, MAX_MESSAGE + 1)
             if not line:
                 break
             if len(line) > MAX_MESSAGE:

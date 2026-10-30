@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -13,17 +14,74 @@ from ..models import OrchError
 
 PINNED_VERSION = "1.1.80"
 DOCS = "https://docs.qoder.cn/cli/cli-reference"
+REASONING_EFFORTS = ("low", "high", "max")
+THINKING_MODES = ("auto", "adaptive", "enabled", "disabled")
+
+
+def normalize_context_window(value):
+    if value is None or value == "":
+        return None
+    if isinstance(value, int) and value > 0:
+        return str(value)
+    text = str(value).strip().lower().replace("_", "").replace(",", "")
+    if not text:
+        return None
+    if text.isdigit() and int(text) > 0:
+        return str(int(text))
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(k|m)", text)
+    if match:
+        amount = float(match.group(1))
+        factor = 1_000_000 if match.group(2) == "m" else 1_000
+        tokens = int(round(amount * factor))
+        if tokens > 0:
+            return str(tokens)
+    raise OrchError("Invalid context_window; use positive integer or shorthand like 1m / 200k")
+
+
+def resolve_executable_path(candidate):
+    if not candidate:
+        return None
+    cleaned = str(candidate).strip().strip('"').strip("'")
+    if not cleaned:
+        return None
+    p = Path(cleaned)
+    if p.is_dir():
+        for rel in (
+            Path("qoderclicn.exe"),
+            Path("qodercn.exe"),
+            Path("bin") / "qoderclicn" / "qoderclicn.exe",
+            Path("bin") / "qoderclicn.exe",
+            Path("qoder-cli") / "qoderclicn.exe",
+        ):
+            sub = p / rel
+            if sub.is_file():
+                return str(sub)
+        return cleaned
+    return cleaned
 
 
 def discover():
-    if os.environ.get("AGENT_ORCH_QODER_CN"):
-        return os.environ["AGENT_ORCH_QODER_CN"]
-    for name in ("qoderclicn", "qodercn"):
+    env_bin = resolve_executable_path(os.environ.get("AGENT_ORCH_QODER_CN"))
+    if env_bin:
+        return env_bin
+    for name in ("qoderclicn", "qodercn", "qodercli"):
         path = shutil.which(name)
         if path and not path.lower().endswith((".cmd", ".bat", ".ps1")):
             return path
-    path = Path.home()/".qoder-cn"/"bin"/"qoderclicn"/"qoderclicn.exe"
-    return str(path) if path.is_file() else None
+    home = Path.home()
+    local_app = Path(os.environ.get("LOCALAPPDATA", str(home / "AppData" / "Local")))
+    candidates = [
+        home / ".qoder-cn" / "bin" / "qoderclicn" / "qoderclicn.exe",
+        home / ".qoder-cn" / "bin" / "qoderclicn.exe",
+        home / ".qoder-cn" / "qoderclicn.exe",
+        home / ".local" / "bin" / "qoderclicn.exe",
+        local_app / "Programs" / "Qoder CN" / "resources" / "app" / "bin" / "qoderclicn.exe",
+        local_app / "Programs" / "Qoder CN" / "qoderclicn.exe",
+    ]
+    for path in candidates:
+        if path.is_file():
+            return str(path)
+    return None
 
 
 def parse_result(text, exit_code):
@@ -62,10 +120,18 @@ def parse_result(text, exit_code):
 
 
 class QoderCNAdapter(CodexAdapter):
-    def __init__(self, *, enabled=False, executable=None, **kwargs):
-        path = executable or discover()
+    def __init__(self, *, enabled=False, executable=None, reasoning_effort=None, thinking=None, context_window=None, **kwargs):
+        path = resolve_executable_path(executable) or discover()
         super().__init__(enabled=enabled, executable=path or "qoder-cn-unavailable", **kwargs)
         self.executable = path
+        self.reasoning_effort = reasoning_effort.strip().lower() if isinstance(reasoning_effort, str) and reasoning_effort.strip() else None
+        if self.reasoning_effort and self.reasoning_effort not in REASONING_EFFORTS:
+            raise OrchError(f"Unsupported reasoning_effort: {self.reasoning_effort}")
+        self.thinking = thinking.strip().lower() if isinstance(thinking, str) and thinking.strip() else None
+        if self.thinking and self.thinking not in THINKING_MODES:
+            raise OrchError(f"Unsupported thinking mode: {self.thinking}")
+        self.context_window_raw = str(context_window).strip() if context_window else None
+        self.context_window = normalize_context_window(context_window)
 
     async def probe(self, cwd, cancelled=None):
         cancelled = cancelled or self.cancelled
@@ -100,6 +166,12 @@ class QoderCNAdapter(CodexAdapter):
                 "--max-output-tokens", "8192", "-p", "-o", "json"]
         if self.model:
             argv += ["--model", self.model]
+        if self.context_window:
+            argv += ["--context-window", self.context_window]
+        if self.reasoning_effort:
+            argv += ["--reasoning-effort", self.reasoning_effort]
+        if self.thinking:
+            argv += ["--thinking", self.thinking]
         message = prompt + "\nReturn only a JSON object, no Markdown fences. Match this JSON Schema:\n" + json.dumps(schema)
         process = await self._run(argv, workspace, "exec", stdin=message, timeout=timeout, cancelled=cancelled, auth=True)
         if process.exit_code != 0 and (blocked_error(process.stderr) or (not process.stdout.lstrip().startswith(("{", "[")) and blocked_error(process.stdout))):
@@ -108,4 +180,7 @@ class QoderCNAdapter(CodexAdapter):
             raise OrchError("Qoder CLI failed: "+redact(process.stderr))
         result, self.last_metadata = parse_result(process.stdout, process.exit_code)
         self.last_metadata["requested_model"] = self.model
+        self.last_metadata["reasoning_effort"] = self.reasoning_effort
+        self.last_metadata["thinking"] = self.thinking
+        self.last_metadata["context_window"] = self.context_window_raw or self.context_window
         return result

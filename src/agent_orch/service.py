@@ -152,7 +152,7 @@ class Service:
             raise OrchError("Unknown tool")
         validate_arguments(arguments, definition["inputSchema"])
         if name == "helm_capabilities":
-            enabled = ["mock"]+[p for p, key in (("codex", "enable_codex"), ("qoder-cn", "enable_qoder_cn"), ("claude", "enable_claude"), ("cursor", "enable_cursor")) if self.runtime.get(key)]
+            enabled = ["mock"]+[p for p, key in (("codex", "enable_codex"), ("qoder-cn", "enable_qoder_cn"), ("claude", "enable_claude"), ("cursor", "enable_cursor"), ("deepseek", "enable_deepseek"), ("antigravity", "enable_antigravity")) if self.runtime.get(key)]
             return {"version": __version__, "scope": "new synthetic stats fixtures only", "enabled_workers": enabled,
                     "reviewer": self.runtime.get("brain", "mock"), "human_approval_required": True,
                     "no_tools_for": ["approval", "budget authorization", "credentials", "arbitrary commands/paths", "merge", "push"],
@@ -219,7 +219,8 @@ class Service:
                     ev = json.loads(row["evidence"])
                     item.update(candidate_hash=ev["candidate_hash"], scope_ok=ev["scope_ok"], changed_paths=ev["changed_paths"],
                                 diff=redact(ev["diff"])[:12000], verification_passed=ev["verification"]["passed"],
-                                baseline_passed=ev["baseline"]["passed"], verifier_contract=ev.get("verifier_contract"))
+                                baseline_passed=ev["baseline"]["passed"], verifier_contract=ev.get("verifier_contract"),
+                                worker_result=ev.get("worker_result"))
                 evidence.append(item)
             reviews = [json.loads(r[0]) for r in self.store.db.execute("SELECT body FROM reviews WHERE run_id=? AND task_id=? ORDER BY rowid", (run, arguments["task_id"]))]
             reviews = [{"decision": r["decision"], "candidate_hash": r["candidate_hash"], "reasons": [redact(text) for text in r["reasons"][:10]]} for r in reviews if r.get("decision") != "pending"]

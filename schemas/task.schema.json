@@ -27,7 +27,9 @@
         "codex",
         "qoder-cn",
         "cursor",
-        "claude"
+        "claude",
+        "deepseek",
+        "antigravity"
       ]
     },
     "dependencies": {

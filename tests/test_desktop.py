@@ -122,6 +122,8 @@ class DesktopTests(unittest.IsolatedAsyncioTestCase):
         from agent_orch.adapters.codex_cli import CodexAdapter
         from agent_orch.adapters.qoder_cn_cli import QoderCNAdapter
         from agent_orch.adapters.claude_cli import ClaudeAdapter
+        from agent_orch.adapters.deepseek_cli import DeepSeekAdapter
+        from agent_orch.adapters.antigravity_cli import AntigravityAdapter
         from agent_orch.budget import create_budget
         ledger = Path(self.temp.name)/"budget.db"
         create_budget(ledger, .3, .1)
@@ -136,3 +138,44 @@ class DesktopTests(unittest.IsolatedAsyncioTestCase):
                 await adapter.call("synthetic prompt", {}, workspace)
             argv = adapter._run.call_args.args[0]
             self.assertEqual(argv[argv.index("--model")+1], "fixture-model")
+
+    async def test_qoder_cn_thinking_and_context_window_and_unified_worker_result(self):
+        from agent_orch.adapters.qoder_cn_cli import QoderCNAdapter
+        from agent_orch.models import normalize_worker_result
+        exe = Path(self.temp.name) / "qoderclicn.exe"
+        exe.write_bytes(b"MZ")
+        profile = {
+            **self.desktop.profiles["qoder-cn"],
+            "enabled": True,
+            "connection": "path",
+            "executable": f'"{exe}"',
+            "model": "deepseek-flash",
+            "context_window": "1m",
+            "reasoning_effort": "high",
+        }
+        await self.desktop.call("save_agent", {"profile": profile})
+        saved = json.loads(self.desktop.path.read_text(encoding="utf-8"))["qoder-cn"]
+        self.assertEqual(saved["executable"], str(exe))
+        self.assertEqual(saved["model"], "deepseek-flash")
+        self.assertEqual(saved["context_window"], "1m")
+        self.assertEqual(saved["reasoning_effort"], "high")
+        runtime = self.desktop.runtime(self.desktop.profiles, "qoder-cn")
+        scheduler = Scheduler(self.desktop.service.store, **runtime)
+        self.assertEqual(scheduler.qoder_cn.model, "deepseek-flash")
+        self.assertEqual(scheduler.qoder_cn.context_window, "1000000")
+        self.assertEqual(scheduler.qoder_cn.reasoning_effort, "high")
+        unified = normalize_worker_result(
+            {"summary": "fixed empty list sum", "files": [{"path": "stats.py", "content": "def total(xs): return sum(xs)\n"}]},
+            ["stats.py"],
+            provider="qoder-cn",
+            attempt=1,
+            thinking={"model": "deepseek-flash", "reasoning_effort": "high", "context_window": "1m"},
+        )
+        self.assertEqual(unified["protocol"], "agent-helm.worker-result.v2")
+        self.assertEqual(unified["schema_version"], 2)
+        self.assertEqual(unified["provider"], "qoder-cn")
+        self.assertEqual(unified["thinking"]["model"], "deepseek-flash")
+        self.assertEqual(unified["thinking"]["reasoning_effort"], "high")
+        self.assertEqual(unified["thinking"]["context_window"], "1m")
+        self.assertEqual(len(unified["operations"]), 1)
+        self.assertEqual(unified["operations"][0]["action"], "write")

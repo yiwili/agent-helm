@@ -44,6 +44,23 @@ def relpath(value):
     return value
 
 
+PROVIDERS = ("mock", "manual", "codex", "qoder-cn", "cursor", "claude", "deepseek", "antigravity")
+WORKER_RESULT_PROTOCOL = "agent-helm.worker-result.v2"
+WORKER_RESULT_STATUSES = ("completed", "partial", "blocked")
+_RESULT_OPTIONAL_KEYS = (
+    "schema_version",
+    "protocol",
+    "status",
+    "provider",
+    "attempt",
+    "diagnostics",
+    "thinking",
+    "metrics",
+    "artifacts",
+    "extensions",
+)
+
+
 def validate_plan(plan):
     strict(plan, ("schema_version", "goal", "tasks", "max_rework_rounds", "api_budget"))
     if type(plan["schema_version"]) is not int or plan["schema_version"] != 1 or not isinstance(plan["goal"], str) or not plan["goal"].strip():
@@ -62,7 +79,7 @@ def validate_plan(plan):
         if not isinstance(t["id"], str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", t["id"]) or t["id"] in ids:
             raise OrchError("Duplicate or invalid task ID")
         ids.add(t["id"])
-        if t["provider"] not in ("mock", "manual", "codex", "qoder-cn", "cursor", "claude"):
+        if t["provider"] not in PROVIDERS:
             raise OrchError("Unknown or unimplemented provider")
         if not isinstance(t["goal"], str) or not t["goal"].strip():
             raise OrchError("Task goal required")
@@ -95,11 +112,28 @@ def validate_plan(plan):
     return plan
 
 
+def _validate_result_extensions(obj):
+    if "protocol" in obj and (not isinstance(obj["protocol"], str) or not obj["protocol"].strip()):
+        raise OrchError("Invalid worker result protocol")
+    if "status" in obj and obj["status"] not in WORKER_RESULT_STATUSES:
+        raise OrchError("Invalid worker result status")
+    if "provider" in obj and (not isinstance(obj["provider"], str) or obj["provider"] not in PROVIDERS):
+        raise OrchError("Invalid worker result provider")
+    if "attempt" in obj and (type(obj["attempt"]) is not int or obj["attempt"] < 1):
+        raise OrchError("Invalid worker result attempt")
+    for dict_key in ("diagnostics", "thinking", "metrics", "extensions"):
+        if dict_key in obj and not isinstance(obj[dict_key], dict):
+            raise OrchError(f"Invalid worker result {dict_key}")
+    if "artifacts" in obj and not isinstance(obj["artifacts"], list):
+        raise OrchError("Invalid worker result artifacts")
+
+
 def validate_result(obj, allowed):
     if isinstance(obj, dict) and "operations" in obj:
-        strict(obj, ("schema_version", "summary", "operations"))
+        strict(obj, ("schema_version", "summary", "operations"), ("files", *_RESULT_OPTIONAL_KEYS))
         if type(obj["schema_version"]) is not int or obj["schema_version"] != 2 or not isinstance(obj["summary"], str) or not isinstance(obj["operations"], list) or len(obj["operations"]) > 50:
             raise OrchError("Invalid operations result")
+        _validate_result_extensions(obj)
         seen = set()
         for op in obj["operations"]:
             if not isinstance(op, dict):
@@ -127,7 +161,10 @@ def validate_result(obj, allowed):
                     raise OrchError("Operation scope exceeded or paths overlap")
                 seen.add(p.casefold())
         return obj
-    strict(obj, ("summary", "files"))
+    strict(obj, ("summary", "files"), _RESULT_OPTIONAL_KEYS)
+    if "schema_version" in obj and (type(obj["schema_version"]) is not int or obj["schema_version"] not in (1, 2)):
+        raise OrchError("Invalid result schema_version")
+    _validate_result_extensions(obj)
     if not isinstance(obj["summary"], str) or not isinstance(obj["files"], list):
         raise OrchError("Malformed worker result")
     seen = set()
@@ -140,6 +177,63 @@ def validate_result(obj, allowed):
             raise OrchError("Worker exceeded approved file scope")
         seen.add(p.casefold())
     return obj
+
+
+def normalize_worker_result(obj, allowed, *, provider="mock", attempt=1, metadata=None, thinking=None):
+    validated = validate_result(obj, allowed)
+    if "operations" in validated:
+        operations = [dict(op) for op in validated["operations"]]
+        files = [
+            {"path": op["path"], "content": op["content"]}
+            for op in operations
+            if op.get("action") == "write" and op.get("encoding", "utf-8") == "utf-8"
+        ]
+    else:
+        files = [{"path": f["path"], "content": f["content"]} for f in validated["files"]]
+        operations = [
+            {"action": "write", "path": f["path"], "content": f["content"], "encoding": "utf-8", "executable": False}
+            for f in files
+        ]
+    raw_diag = validated.get("diagnostics") if isinstance(validated.get("diagnostics"), dict) else {}
+    diagnostics = {
+        "root_cause": raw_diag.get("root_cause") if isinstance(raw_diag.get("root_cause"), str) else None,
+        "checks": [str(x) for x in raw_diag.get("checks", []) if isinstance(x, (str, int, float))],
+        "risks": [str(x) for x in raw_diag.get("risks", []) if isinstance(x, (str, int, float))],
+        "warnings": [str(x) for x in raw_diag.get("warnings", []) if isinstance(x, (str, int, float))],
+    }
+    meta = dict(metadata) if isinstance(metadata, dict) else {}
+    raw_metrics = validated.get("metrics") if isinstance(validated.get("metrics"), dict) else {}
+    metrics = {
+        "credits": meta.get("credits", raw_metrics.get("credits", 0.0)),
+        "tokens": meta.get("tokens", raw_metrics.get("tokens", 0)),
+        "amount_usd": meta.get("amount_usd", raw_metrics.get("amount_usd", 0.0)),
+        "source": meta.get("source", raw_metrics.get("source", "none")),
+    }
+    raw_thinking = validated.get("thinking") if isinstance(validated.get("thinking"), dict) else {}
+    cfg_thinking = dict(thinking) if isinstance(thinking, dict) else {}
+    thinking_envelope = {
+        "model": cfg_thinking.get("model") or meta.get("model") or raw_thinking.get("model") or None,
+        "reasoning_effort": cfg_thinking.get("reasoning_effort") or meta.get("reasoning_effort") or raw_thinking.get("reasoning_effort") or None,
+        "thinking_mode": cfg_thinking.get("thinking") or meta.get("thinking") or raw_thinking.get("thinking_mode") or raw_thinking.get("mode") or None,
+        "context_window": cfg_thinking.get("context_window") or meta.get("context_window") or raw_thinking.get("context_window") or None,
+    }
+    artifacts = list(validated["artifacts"]) if isinstance(validated.get("artifacts"), list) else []
+    extensions = dict(validated["extensions"]) if isinstance(validated.get("extensions"), dict) else {}
+    return {
+        "schema_version": 2,
+        "protocol": validated.get("protocol") or WORKER_RESULT_PROTOCOL,
+        "status": validated.get("status") or "completed",
+        "provider": validated.get("provider") or provider,
+        "attempt": int(validated.get("attempt") or attempt),
+        "summary": validated["summary"],
+        "files": files,
+        "operations": operations,
+        "diagnostics": diagnostics,
+        "thinking": thinking_envelope,
+        "metrics": metrics,
+        "artifacts": artifacts,
+        "extensions": extensions,
+    }
 
 
 def validate_review(obj, evidence):
