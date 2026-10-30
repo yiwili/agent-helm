@@ -1,0 +1,35 @@
+name: Native executable packages
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['src/**', 'scripts/**', 'tests/**', 'build*', 'pyproject.toml', '.github/workflows/package.yml']
+permissions:
+  contents: read
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04, macos-15-intel, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Offline regression (no providers, credentials or model quota)
+        env:
+          PYTHONPATH: src
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -m unittest discover -s tests -v
+      - name: Native build and executable MCP smoke
+        shell: bash
+        run: python scripts/build.py --output "$RUNNER_TEMP/agent-helm-package"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agent-helm-${{ matrix.os }}
+          path: ${{ runner.temp }}/agent-helm-package/release/*
+          if-no-files-found: error
+          retention-days: 14

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-helm"
-version = "0.6.1"
+version = "0.7.0"
 description = "Subscription-first local agent orchestration with independent evidence gates"
 requires-python = ">=3.11"
 dependencies = []

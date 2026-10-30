@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "agent-helm": {
+      "command": "C:/Tools/agent-helm/agent-helm.exe",
+      "args": ["--state-root", "C:/AI-Runtime/agent-helm", "mcp"]
+    }
+  }
+}

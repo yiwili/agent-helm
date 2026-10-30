@@ -12,6 +12,7 @@ from pathlib import Path
 from dataclasses import dataclass
 
 from .models import OrchError
+from .runtime import frozen
 
 
 class ProcessTreeUnconfirmed(OrchError):
@@ -105,7 +106,8 @@ async def run_process(argv, cwd, *, stdin="", timeout=60, cancelled=lambda: Fals
     if cancelled():
         raise asyncio.CancelledError("Cancelled before process launch")
     opts = {"start_new_session": True} if os.name != "nt" else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
-    launch = argv if os.name != "nt" else [sys.executable, "-I", "-B", str(Path(__file__).with_name("process_host.py")), *argv]
+    host = [sys.executable, "_process-host"] if frozen() else [sys.executable, "-I", "-B", str(Path(__file__).with_name("process_host.py"))]
+    launch = argv if os.name != "nt" else [*host, *argv]
     proc = await asyncio.create_subprocess_exec(*launch, cwd=cwd, env=safe_env(auth, env_overrides), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, **opts)
     job = None
     async def read(stream):

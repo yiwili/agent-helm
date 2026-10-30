@@ -8,6 +8,7 @@ import json
 from .models import digest, utcnow, OrchError
 from .supervisor import run_process
 from .workspace import manifest
+from .runtime import frozen
 
 
 def fixture_source_allowed(workspace):
@@ -49,6 +50,23 @@ raise SystemExit(0 if all(x["passed"] for x in results) else 1)
 '''
 
 
+def frozen_fixture_check(workspace):
+    """Private bundled entry: recheck the same AST guard before trusted checks."""
+    from pathlib import Path
+    workspace = Path(workspace).resolve()
+    if not fixture_source_allowed(workspace):
+        return 1
+    previous = sys.argv
+    try:
+        sys.argv = [previous[0], str(workspace)]
+        exec(compile(STATS_CHECK, "<trusted-fixture-check>", "exec"), {"__name__": "__main__"})
+    except SystemExit as result:
+        return result.code
+    finally:
+        sys.argv = previous
+    return 0
+
+
 async def verify(workspace, timeout=30, cancelled=lambda: False, profile=None):
     if profile and profile.get("kind") == "registered":
         from .verifier_registry import check_profile
@@ -70,7 +88,7 @@ async def verify(workspace, timeout=30, cancelled=lambda: False, profile=None):
         check_profile(profile)
     before = digest(manifest(workspace))
     start = utcnow()
-    argv = [sys.executable, "-I", "-B", "-c", STATS_CHECK, str(workspace)]
+    argv = [sys.executable, "_fixture-check", str(workspace)] if frozen() else [sys.executable, "-I", "-B", "-c", STATS_CHECK, str(workspace)]
     if fixture_source_allowed(workspace):
         p = await run_process(argv, workspace, timeout=timeout, cancelled=cancelled)
         try:

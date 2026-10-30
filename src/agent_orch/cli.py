@@ -137,11 +137,32 @@ def parser():
     demo.add_argument("--git", action="store_true", help="Use a newly created real Git repository as synthetic fixture")
     demo.add_argument("--real-codex", action="store_true", help="Explicitly run two ChatGPT-login CLI calls on generated synthetic data; never API fallback")
     demo.add_argument("--failure", choices=["bad", "timeout", "quota", "permission"])
+    mcp = sub.add_parser("mcp", help="Local stdio MCP server; managed synthetic fixtures only; human approvals stay outside MCP")
+    mcp.add_argument("--brain", choices=["mock", "interactive", "codex", "qoder-cn"], default="mock")
+    for provider in ("codex", "qoder-cn", "claude", "cursor"):
+        mcp.add_argument("--enable-"+provider, action="store_true")
+    for flag in ("qoder-cn-bin", "claude-bin", "claude-budget-ledger", "cursor-cli-dir", "cursor-config-dir"):
+        mcp.add_argument("--"+flag)
+    approval_service = sub.add_parser("service-approve", help="Human-only terminal approval of a service proposal")
+    approval_service.add_argument("proposal_id")
+    approval_service.add_argument("--yes", action="store_true", help="Explicit trusted local approval for tests/automation; never expose to models")
     return p
 
 
 async def dispatch(args):
     command = args.command
+    if command == "service-approve":
+        from .service import Service
+        service = Service(args.state_root)
+        try:
+            proposal = service.proposal(args.proposal_id)
+            if not args.yes:
+                output(proposal)
+                if not sys.stdin.isatty() or input("Type APPROVE for this exact plan and managed fixture: ") != "APPROVE":
+                    raise OrchError("Human terminal approval required")
+            return service.approve(args.proposal_id)
+        finally:
+            service.close()
     if command == "budgets":
         from .budget import Budget, create_budget
         if args.budget_command == "create":
@@ -314,7 +335,27 @@ def main(argv=None):
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     try:
-        result = asyncio.run(dispatch(parser().parse_args(argv)))
+        arguments = list(sys.argv[1:] if argv is None else argv)
+        if arguments and arguments[0] == "_process-host":
+            from .process_host import main as host
+            sys.argv = [sys.argv[0], *arguments[1:]]
+            return host()
+        if arguments and arguments[0] == "_fixture-check":
+            from .verifier import frozen_fixture_check
+            if len(arguments) != 2:
+                return 2
+            return frozen_fixture_check(arguments[1])
+        args = parser().parse_args(arguments)
+        if args.command == "mcp":
+            from .mcp_server import serve
+            runtime = {key: getattr(args, key) for key in ("brain", "enable_codex", "enable_qoder_cn", "enable_claude", "enable_cursor", "qoder_cn_bin", "claude_bin", "claude_budget_ledger", "cursor_cli_dir", "cursor_config_dir")}
+            try:
+                return asyncio.run(serve(args.state_root, **runtime))
+            except (Exception, asyncio.CancelledError, KeyboardInterrupt) as error:
+                from .adapters.codex_cli import redact
+                print("MCP stopped: "+redact(str(error)), file=sys.stderr)
+                return 2
+        result = asyncio.run(dispatch(args))
         output(result)
         if isinstance(result, dict) and result.get("state") in ("failed", "blocked", "timed_out", "escalated", "needs_reconciliation"):
             return 2
